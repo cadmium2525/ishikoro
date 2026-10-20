@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRng } from './rng';
-import { WALL_X, START_WALL_Z, ROAD_LENGTH, type PoleCollider } from './world';
+import { POLES, WALLS, type Rect } from './level';
 
 const G = 9.8;
 /** スピンによる横方向加速度の最大値 [m/s²] */
@@ -44,12 +44,15 @@ export class Stone {
   readonly velocity = new THREE.Vector3();
   spin = 0;
   moving = false;
+  /** 回収不能になった後の演出状態 */
+  lost: null | 'falling' | 'sinking' | 'flying' = null;
 
   private rollPhase = 0;
   private wobbleOffset: number;
   private stillTime = 0;
   private readonly tmpAxis = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
+  private readonly lostTarget = new THREE.Vector3();
 
   constructor(seed: number, private readonly events: StoneEvents = {}) {
     const rand = createRng(seed);
@@ -86,7 +89,28 @@ export class Stone {
     return Math.hypot(this.velocity.x, this.velocity.z);
   }
 
-  step(dt: number, poles: PoleCollider[]) {
+  /** 地面に接しているか（バウンド中は false） */
+  get onGround() {
+    return this.position.y <= this.traits.radius + 0.02 && this.velocity.y <= 0;
+  }
+
+  /**
+   * @param obstacles 止まっている車など、跳ね返る箱
+   */
+  step(dt: number, obstacles: Rect[] = []) {
+    if (this.lost) {
+      this.updateLost(dt);
+      return;
+    }
+    if (!this.moving) return;
+    // 速いときは分割して塀のすり抜けを防ぐ
+    const travel = Math.hypot(this.velocity.x, this.velocity.y, this.velocity.z) * dt;
+    const n = Math.min(8, Math.max(1, Math.ceil(travel / (this.traits.radius * 0.5))));
+    for (let i = 0; i < n; i++) this.integrate(dt / n, obstacles);
+    this.syncMesh();
+  }
+
+  private integrate(dt: number, obstacles: Rect[]) {
     if (!this.moving) return;
     const t = this.traits;
     const p = this.position;
@@ -141,17 +165,11 @@ export class Stone {
 
       p.x += v.x * dt;
       p.z += v.z * dt;
-
-      // 見た目の転がり
-      const roll = (speed * dt) / t.radius;
-      this.rollPhase += roll;
-      this.tmpAxis.set(v.z, 0, -v.x).normalize();
-      this.tmpQuat.setFromAxisAngle(this.tmpAxis, roll);
-      this.mesh.quaternion.premultiply(this.tmpQuat);
+      this.roll(speed * dt);
     }
 
     this.spin *= Math.exp(-(grounded ? 0.9 : 0.2) * dt);
-    this.collide(poles);
+    this.collide(obstacles);
 
     if (grounded && Math.hypot(v.x, v.z) < 0.05) {
       this.stillTime += dt;
@@ -163,45 +181,130 @@ export class Stone {
     } else {
       this.stillTime = 0;
     }
-    this.syncMesh();
   }
 
-  private collide(poles: PoleCollider[]) {
-    const t = this.traits;
-    const p = this.position;
+  /** 見た目の転がり */
+  private roll(distance: number) {
     const v = this.velocity;
-    const e = t.restitution;
+    if (Math.hypot(v.x, v.z) < 1e-4) return;
+    const angle = distance / this.traits.radius;
+    this.rollPhase += angle;
+    this.tmpAxis.set(v.z, 0, -v.x).normalize();
+    this.tmpQuat.setFromAxisAngle(this.tmpAxis, angle);
+    this.mesh.quaternion.premultiply(this.tmpQuat);
+  }
 
-    const hitWall = (normalSpeed: number) => {
-      this.events.onImpact?.(Math.min(1, Math.abs(normalSpeed) / 6));
-      this.spin *= -0.4;
-    };
-    const maxX = WALL_X - t.radius;
-    if (p.x > maxX && v.x > 0) { p.x = maxX; hitWall(v.x); v.x = -v.x * e; v.z *= 0.9; }
-    if (p.x < -maxX && v.x < 0) { p.x = -maxX; hitWall(v.x); v.x = -v.x * e; v.z *= 0.9; }
-    const minZ = START_WALL_Z + t.radius;
-    const maxZ = ROAD_LENGTH + 2 - 0.075 - t.radius;
-    if (p.z < minZ && v.z < 0) { p.z = minZ; hitWall(v.z); v.z = -v.z * e; v.x *= 0.9; }
-    if (p.z > maxZ && v.z > 0) { p.z = maxZ; hitWall(v.z); v.z = -v.z * e; v.x *= 0.9; }
+  private collide(obstacles: Rect[]) {
+    const r = this.traits.radius;
+    const p = this.position;
 
-    for (const pole of poles) {
-      const dx = p.x - pole.x;
-      const dz = p.z - pole.z;
-      const minDist = pole.radius + t.radius;
-      const d2 = dx * dx + dz * dz;
-      if (d2 >= minDist * minDist) continue;
-      const d = Math.sqrt(d2) || 1e-6;
-      const nx = dx / d;
-      const nz = dz / d;
-      p.x = pole.x + nx * minDist;
-      p.z = pole.z + nz * minDist;
-      const vn = v.x * nx + v.z * nz;
-      if (vn < 0) {
-        hitWall(vn);
-        v.x -= (1 + e) * vn * nx;
-        v.z -= (1 + e) * vn * nz;
+    for (const w of WALLS) {
+      // 線分上の最近点
+      const sx = w.x2 - w.x1;
+      const sz = w.z2 - w.z1;
+      const tt = Math.max(0, Math.min(1, ((p.x - w.x1) * sx + (p.z - w.z1) * sz) / (sx * sx + sz * sz)));
+      this.pushOut(w.x1 + sx * tt, w.z1 + sz * tt, r);
+    }
+    for (const pole of POLES) this.pushOut(pole.x, pole.z, r + pole.radius);
+    if (p.y < 0.8) {
+      for (const o of obstacles) {
+        this.pushOut(Math.max(o.x0, Math.min(o.x1, p.x)), Math.max(o.z0, Math.min(o.z1, p.z)), r);
       }
     }
+  }
+
+  /** 点 (cx, cz) から minDist 以内なら押し出して反射する */
+  private pushOut(cx: number, cz: number, minDist: number) {
+    const p = this.position;
+    const v = this.velocity;
+    const dx = p.x - cx;
+    const dz = p.z - cz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 >= minDist * minDist) return;
+    const d = Math.sqrt(d2) || 1e-6;
+    const nx = dx / d;
+    const nz = dz / d;
+    p.x = cx + nx * minDist;
+    p.z = cz + nz * minDist;
+    const vn = v.x * nx + v.z * nz;
+    if (vn < 0) {
+      const e = this.traits.restitution;
+      this.events.onImpact?.(Math.min(1, -vn / 6));
+      this.spin *= -0.4;
+      v.x -= (1 + e) * vn * nx;
+      v.z -= (1 + e) * vn * nz;
+      // 塀と擦れて接線方向も少し落ちる
+      v.x *= 0.92;
+      v.z *= 0.92;
+    }
+  }
+
+  // ---------- 失う演出 ----------
+
+  /** 側溝へ落ちる。rect は側溝の開口部 */
+  fallInto(gutter: Rect) {
+    this.lost = 'falling';
+    this.moving = false;
+    this.lostTarget.set(
+      Math.max(gutter.x0 + 0.1, Math.min(gutter.x1 - 0.1, this.position.x)),
+      0,
+      Math.max(gutter.z0 + 0.1, Math.min(gutter.z1 - 0.1, this.position.z)),
+    );
+    this.velocity.y = 0;
+  }
+
+  /** 草むらに分け入って見えなくなる */
+  sink() {
+    this.lost = 'sinking';
+    this.moving = false;
+  }
+
+  /** 車にはじかれて飛んでいく */
+  launch(vx: number, vy: number, vz: number) {
+    this.lost = 'flying';
+    this.moving = false;
+    this.velocity.set(vx, vy, vz);
+    this.position.y = Math.max(this.position.y, this.traits.radius + 0.05);
+  }
+
+  private updateLost(dt: number) {
+    const p = this.position;
+    const v = this.velocity;
+    const r = this.traits.radius;
+    switch (this.lost) {
+      case 'falling': {
+        // 縁から溝の中へ転がり込み、沈む
+        p.x += (this.lostTarget.x - p.x) * Math.min(1, dt * 10);
+        p.z += (this.lostTarget.z - p.z) * Math.min(1, dt * 10);
+        v.y -= G * dt;
+        p.y += v.y * dt;
+        this.roll(Math.abs(v.y) * dt * 0.5);
+        if (p.y < -0.4) this.mesh.visible = false;
+        break;
+      }
+      case 'sinking': {
+        const k = Math.exp(-6 * dt);
+        v.x *= k;
+        v.z *= k;
+        p.x += v.x * dt;
+        p.z += v.z * dt;
+        p.y = Math.max(r - 0.3, p.y - dt * 0.15);
+        break;
+      }
+      case 'flying': {
+        v.y -= G * dt;
+        p.addScaledVector(v, dt);
+        if (p.y < r) {
+          p.y = r;
+          v.y = Math.abs(v.y) * 0.4;
+          v.x *= 0.7;
+          v.z *= 0.7;
+        }
+        this.roll(Math.hypot(v.x, v.z) * dt);
+        break;
+      }
+    }
+    this.syncMesh();
   }
 
   private syncMesh() {

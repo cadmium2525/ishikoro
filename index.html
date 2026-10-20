@@ -23,6 +23,7 @@
         user-select: none;
         -webkit-touch-callout: none;
         touch-action: none;
+        overscroll-behavior: none;
       }
       canvas#game { display: block; width: 100vw; height: 100dvh; touch-action: none; }
 
@@ -40,6 +41,21 @@
         white-space: nowrap;
       }
       #status b { font-size: 16px; }
+      #status.off { opacity: 0; }
+
+      #msg {
+        top: calc(max(12px, env(safe-area-inset-top)) + 40px);
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: rgba(74, 58, 42, 0.78);
+        color: #fff8ec;
+        font-size: 13px;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+      #msg.on { opacity: 1; }
 
       #power {
         right: max(16px, env(safe-area-inset-right));
@@ -116,6 +132,9 @@
       }
       #overlay h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: 0.1em; }
       #overlay .small { font-size: 13px; opacity: 0.75; }
+      #overlay .action { margin-top: 6px; font-size: 14px; color: #a0602c; }
+      #overlay.title { align-items: center; background: rgba(255, 240, 215, 0.35); }
+      #overlay.title h1 { font-size: 40px; letter-spacing: 0.3em; margin-right: -0.3em; }
     </style>
   </head>
   <body>
@@ -125,6 +144,7 @@
       <span>いえまで <b id="dist">--</b> m</span>
       <span>けった <b id="kicks">0</b> 回</span>
     </div>
+    <div id="msg" class="hud"></div>
     <div id="power" class="hud"><div class="danger"></div><div class="fill"></div></div>
     <div id="spin" class="hud"><div class="dot"></div></div>
     <div id="hint" class="hud">タップで方向 → 長押しで強さ →<br />左右にずらして回転 → はなして蹴る</div>
@@ -133,7 +153,7 @@
       <div class="card">
         <h1 id="ov-title">ただいま</h1>
         <div id="ov-body"></div>
-        <div class="small">タップでもう一度</div>
+        <div id="ov-action" class="action"></div>
       </div>
     </div>
 

@@ -1,218 +1,256 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRng } from './rng';
-
-/** Phase 1: 学校から家まで続くまっすぐな住宅街の道1本 */
-export const ROAD_LENGTH = 120;
-/** ブロック塀の内側（石が跳ね返る面）の x 座標 */
-export const WALL_X = 3.2;
-/** 学校の門（スタート背後の壁）の z 座標 */
-export const START_WALL_Z = -4;
-/** 家の門の位置と、石を置けばクリアになる範囲 */
-export const HOME_GATE = { x: 1.6, z: ROAD_LENGTH - 2, halfWidth: 1.0, depth: 1.6 };
-
-/** 石が衝突する円柱（電柱など） */
-export interface PoleCollider {
-  x: number;
-  z: number;
-  radius: number;
-}
-
-export interface World {
-  group: THREE.Group;
-  poles: PoleCollider[];
-}
+import { GRASS_LOT, GUTTERS, HOME_GATE_X, HOME_MAT, HOME_ROAD, MAIN_ROAD, PAVED, POLES, ROAD_A, WALLS, type Rect } from './level';
 
 const lambert = (color: number) => new THREE.MeshLambertMaterial({ color, flatShading: true });
 
-export function buildWorld(seed: number): World {
+/**
+ * 同じ材質の静的メッシュを1つにまとめるための入れ物。
+ * 家や塀は数が多いので、描画呼び出しを材質ごとに1回へ減らす。
+ */
+class Batcher {
+  private readonly parts = new Map<number, { mat: THREE.Material; geos: THREE.BufferGeometry[]; shadow: boolean }>();
+
+  add(geo: THREE.BufferGeometry, color: number, matrix: THREE.Matrix4, shadow = true) {
+    let p = this.parts.get(color);
+    if (!p) {
+      p = { mat: lambert(color), geos: [], shadow };
+      this.parts.set(color, p);
+    }
+    const g = (geo.index ? geo.toNonIndexed() : geo.clone()).applyMatrix4(matrix);
+    g.deleteAttribute('uv');
+    p.geos.push(g);
+  }
+
+  box(w: number, h: number, d: number, color: number, x: number, y: number, z: number, rotY = 0, shadow = true) {
+    const m = new THREE.Matrix4().makeRotationY(rotY).setPosition(x, y, z);
+    this.add(new THREE.BoxGeometry(w, h, d), color, m, shadow);
+  }
+
+  build(group: THREE.Group) {
+    for (const p of this.parts.values()) {
+      const mesh = new THREE.Mesh(mergeGeometries(p.geos), p.mat);
+      mesh.castShadow = p.shadow;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+  }
+}
+
+export function buildWorld(seed: number): THREE.Group {
   const rand = createRng(seed);
   const group = new THREE.Group();
-  const poles: PoleCollider[] = [];
+  const b = new Batcher();
 
   // 地面（塀の外側の土・庭）
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, ROAD_LENGTH + 80), lambert(0xa9b77a));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 200), lambert(0xa9b77a));
   ground.rotation.x = -Math.PI / 2;
-  ground.position.set(0, -0.01, ROAD_LENGTH / 2);
+  ground.position.set(0, -0.01, 55);
   ground.receiveShadow = true;
   group.add(ground);
 
-  // アスファルト
-  const roadLen = ROAD_LENGTH - START_WALL_Z;
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(WALL_X * 2, roadLen), lambert(0x77736e));
-  road.rotation.x = -Math.PI / 2;
-  road.position.set(0, 0, START_WALL_Z + roadLen / 2);
-  road.receiveShadow = true;
-  group.add(road);
+  // 舗装面（重なりは少しずつ高さをずらしてちらつきを防ぐ）
+  PAVED.forEach((r, i) => {
+    const color = r === MAIN_ROAD ? 0x6a6764 : 0x77736e;
+    const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition((r.x0 + r.x1) / 2, i * 0.0005, (r.z0 + r.z1) / 2);
+    b.add(new THREE.PlaneGeometry(r.x1 - r.x0, r.z1 - r.z0), color, m, false);
+  });
 
-  // 路側の白線
-  const lineMat = lambert(0xeeeae0);
-  for (const sx of [-1, 1]) {
-    const line = new THREE.Mesh(new THREE.PlaneGeometry(0.1, roadLen), lineMat);
-    line.rotation.x = -Math.PI / 2;
-    line.position.set(sx * (WALL_X - 0.75), 0.003, START_WALL_Z + roadLen / 2);
-    line.receiveShadow = true;
-    group.add(line);
+  buildRoadMarkings(b);
+  buildGutters(b);
+  buildWalls(b);
+  buildGrassLot(b, rand);
+  buildHouses(b, rand);
+  buildSchool(b);
+  buildHome(b);
+  buildPoles(b);
+
+  b.build(group);
+  return group;
+}
+
+const flat = (b: Batcher, r: Rect, y: number, color: number) => {
+  const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition((r.x0 + r.x1) / 2, y, (r.z0 + r.z1) / 2);
+  b.add(new THREE.PlaneGeometry(r.x1 - r.x0, r.z1 - r.z0), color, m, false);
+};
+
+function buildRoadMarkings(b: Batcher) {
+  const white = 0xeeeae0;
+  const y = 0.004;
+  // 道A・路地の路側線（側溝の内側）
+  flat(b, { x0: -2.65, x1: -2.55, z0: -4, z1: 28 }, y, white);
+  flat(b, { x0: 2.55, x1: 2.65, z0: -4, z1: 28 }, y, white);
+  flat(b, { x0: -2.65, x1: -2.55, z0: 33, z1: 62 }, y, white);
+  flat(b, { x0: 2.55, x1: 2.65, z0: 33, z1: 62 }, y, white);
+
+  // 抜け道の「止まれ」の代わりの停止線（道Aの手前）と矢印
+  flat(b, { x0: -2.6, x1: 2.6, z0: 26.9, z1: 27.15 }, y, white);
+  for (let x = -40; x <= 40; x += 16) {
+    flat(b, { x0: x, x1: x + 1.6, z0: 30.42, z1: 30.58 }, y, white);
+    const tri = new THREE.Shape([new THREE.Vector2(0, 0.45), new THREE.Vector2(0, -0.45), new THREE.Vector2(0.8, 0)]);
+    const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition(x + 1.6, y, 30.5);
+    b.add(new THREE.ShapeGeometry(tri), white, m, false);
   }
 
-  // 側溝のふた（Phase 1 では見た目のみ。落下判定は Phase 2）
-  const lidMat = lambert(0x9d9a92);
-  const lidGeo = new THREE.BoxGeometry(0.5, 0.03, 0.98);
-  for (const sx of [-1, 1]) {
-    const lids = new THREE.InstancedMesh(lidGeo, lidMat, Math.ceil(roadLen));
-    const m = new THREE.Matrix4();
-    for (let i = 0; i < lids.count; i++) {
-      m.makeTranslation(sx * (WALL_X - 0.3), 0.012, START_WALL_Z + 0.5 + i);
-      lids.setMatrixAt(i, m);
+  // 大通り：センターライン・停止線・横断歩道
+  for (let x = -60; x < 60; x += 4) {
+    if (x > -6 && x < 4) continue;
+    flat(b, { x0: x, x1: x + 2.4, z0: 65.92, z1: 66.08 }, y, 0xe8c34a);
+  }
+  flat(b, { x0: -4.7, x1: -4.4, z0: 62.3, z1: 65.9 }, y, white);
+  flat(b, { x0: 4.4, x1: 4.7, z0: 66.1, z1: 69.7 }, y, white);
+  for (let x = -2.9; x < 2.9; x += 0.9) {
+    flat(b, { x0: x, x1: x + 0.45, z0: 62.4, z1: 69.6 }, y, white);
+  }
+}
+
+function buildGutters(b: Batcher) {
+  for (const g of GUTTERS) {
+    const r = g.rect;
+    const alongZ = r.z1 - r.z0 > r.x1 - r.x0;
+    // ふたのない部分：暗い溝と縁石
+    flat(b, r, 0.002, 0x34332f);
+    const edge = alongZ
+      ? [{ ...r, x1: r.x0 + 0.06 }, { ...r, x0: r.x1 - 0.06 }]
+      : [{ ...r, z1: r.z0 + 0.06 }, { ...r, z0: r.z1 - 0.06 }];
+    for (const e of edge) flat(b, e, 0.003, 0xb9b3a6);
+    // 水の筋
+    const w = alongZ
+      ? { x0: (r.x0 + r.x1) / 2 - 0.06, x1: (r.x0 + r.x1) / 2 + 0.06, z0: r.z0, z1: r.z1 }
+      : { x0: r.x0, x1: r.x1, z0: (r.z0 + r.z1) / 2 - 0.06, z1: (r.z0 + r.z1) / 2 + 0.06 };
+    flat(b, w, 0.0025, 0x55626a);
+
+    // ふた：1枚ずつ並べる
+    for (const lid of g.lids) {
+      const len = alongZ ? lid.z1 - lid.z0 : lid.x1 - lid.x0;
+      const n = Math.max(1, Math.round(len));
+      for (let i = 0; i < n; i++) {
+        const t0 = i / n;
+        const t1 = (i + 1) / n;
+        const piece = alongZ
+          ? { x0: lid.x0, x1: lid.x1, z0: lid.z0 + (lid.z1 - lid.z0) * t0 + 0.01, z1: lid.z0 + (lid.z1 - lid.z0) * t1 - 0.01 }
+          : { x0: lid.x0 + (lid.x1 - lid.x0) * t0 + 0.01, x1: lid.x0 + (lid.x1 - lid.x0) * t1 - 0.01, z0: lid.z0, z1: lid.z1 };
+        b.box(piece.x1 - piece.x0, 0.03, piece.z1 - piece.z0, 0x9d9a92, (piece.x0 + piece.x1) / 2, 0.015, (piece.z0 + piece.z1) / 2, 0, false);
+      }
     }
-    lids.receiveShadow = true;
-    group.add(lids);
   }
+}
 
-  // ブロック塀
-  const wallMat = lambert(0xc9c0ad);
-  const capMat = lambert(0xa79f8f);
-  const addWall = (x: number, z0: number, z1: number) => {
-    const len = z1 - z0;
-    if (len <= 0) return;
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1.2, len), wallMat);
-    wall.position.set(x, 0.6, z0 + len / 2);
-    wall.castShadow = true;
-    wall.receiveShadow = true;
-    group.add(wall);
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.06, len), capMat);
-    cap.position.set(x, 1.23, z0 + len / 2);
-    cap.castShadow = true;
-    group.add(cap);
-  };
-  const wallSide = WALL_X + 0.075;
-  addWall(-wallSide, START_WALL_Z, ROAD_LENGTH + 2);
-  addWall(wallSide, START_WALL_Z, ROAD_LENGTH + 2);
+function buildWalls(b: Batcher) {
+  for (const w of WALLS) {
+    const len = Math.hypot(w.x2 - w.x1, w.z2 - w.z1);
+    const cx = (w.x1 + w.x2) / 2 + w.nx * 0.075;
+    const cz = (w.z1 + w.z2) / 2 + w.nz * 0.075;
+    const rot = Math.atan2(w.x2 - w.x1, w.z2 - w.z1);
+    // 少し長くして角の継ぎ目を埋める
+    b.box(0.15, 1.2, len + 0.15, 0xc9c0ad, cx, 0.6, cz, rot);
+    b.box(0.2, 0.06, len + 0.2, 0xa79f8f, cx, 1.23, cz, rot);
+  }
+}
 
-  // 突き当たりの塀と学校側の塀
-  const endWall = new THREE.Mesh(new THREE.BoxGeometry(WALL_X * 2 + 0.3, 1.2, 0.15), wallMat);
-  endWall.position.set(0, 0.6, ROAD_LENGTH + 2);
-  endWall.castShadow = true;
-  group.add(endWall);
-  const schoolWall = endWall.clone();
-  schoolWall.position.z = START_WALL_Z - 0.075;
-  group.add(schoolWall);
+function buildGrassLot(b: Batcher, rand: () => number) {
+  const r = GRASS_LOT;
+  flat(b, r, 0.003, 0x7d9a4c);
+  const blade = new THREE.ConeGeometry(0.22, 1, 4);
+  for (let i = 0; i < 260; i++) {
+    const x = r.x0 + rand() * (r.x1 - r.x0 - 0.1);
+    const z = r.z0 + rand() * (r.z1 - r.z0);
+    const h = 0.5 + rand() * 0.7;
+    const m = new THREE.Matrix4().makeScale(1, h, 1).setPosition(x, h / 2, z);
+    b.add(blade, rand() < 0.5 ? 0x6f8f43 : 0x86a552, m);
+  }
+  // 草むらの手前の目印（立入禁止の杭とロープ）
+  for (let z = r.z0 + 0.5; z <= r.z1; z += 2.5) b.box(0.08, 0.7, 0.08, 0xd8d0c0, r.x1 - 0.05, 0.35, z);
+  b.box(0.02, 0.02, r.z1 - r.z0 - 1, 0xc0503a, r.x1 - 0.05, 0.6, (r.z0 + r.z1) / 2, 0, false);
+}
 
-  buildSchool(group);
-  buildHome(group);
-
-  // 道沿いの家々
+/** 塀の外側に家を並べる。道や他の家と重なる場所は飛ばす。 */
+function buildHouses(b: Batcher, rand: () => number) {
   const houseColors = [0xe9dcc4, 0xd8c7a8, 0xf0e6d6, 0xc7b79c, 0xe2d2bd];
   const roofColors = [0x5d6b7a, 0x8a4b3c, 0x4f5a4c, 0x6a5848];
-  for (const sx of [-1, 1]) {
-    let z = 4 + rand() * 4;
-    while (z < ROAD_LENGTH - 8) {
-      const w = 5 + rand() * 3;
-      const d = 5 + rand() * 2;
-      const h = 2.6 + rand() * 1.4;
-      const house = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.BoxGeometry(d, h, w), lambert(houseColors[Math.floor(rand() * houseColors.length)]));
-      body.position.y = h / 2;
-      body.castShadow = true;
-      body.receiveShadow = true;
-      house.add(body);
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, d) * 0.78, 1.6, 4), lambert(roofColors[Math.floor(rand() * roofColors.length)]));
-      roof.rotation.y = Math.PI / 4;
-      roof.scale.set(d / Math.max(w, d), 1, w / Math.max(w, d));
-      roof.position.y = h + 0.8;
-      roof.castShadow = true;
-      house.add(roof);
-      house.position.set(sx * (WALL_X + 1.6 + d / 2 + rand()), 0, z + w / 2);
-      group.add(house);
+  const placed: Rect[] = [GRASS_LOT, homeLot(), { x0: -14, x1: 14, z0: -20, z1: -4 }];
+  const blocked = (r: Rect) =>
+    PAVED.some((p) => overlaps(p, r, 0.3)) || placed.some((p) => overlaps(p, r, 0.4));
 
-      // 庭木
-      if (rand() < 0.6) {
-        const tree = makeTree(rand);
-        tree.position.set(sx * (WALL_X + 0.9), 0, z + rand() * w);
-        group.add(tree);
+  for (const w of WALLS) {
+    if (!w.houses) continue;
+    const len = Math.hypot(w.x2 - w.x1, w.z2 - w.z1);
+    const ux = (w.x2 - w.x1) / len;
+    const uz = (w.z2 - w.z1) / len;
+    let t = 1 + rand() * 3;
+    while (t < len - 4) {
+      const width = 5 + rand() * 3;
+      const depth = 5 + rand() * 2;
+      const h = 2.6 + rand() * 1.4;
+      const off = 2.0 + rand() + depth / 2;
+      const cx = w.x1 + ux * (t + width / 2) + w.nx * off;
+      const cz = w.z1 + uz * (t + width / 2) + w.nz * off;
+      // 道に沿った向きの外接矩形
+      const hx = Math.abs(ux) * width / 2 + Math.abs(w.nx) * depth / 2;
+      const hz = Math.abs(uz) * width / 2 + Math.abs(w.nz) * depth / 2;
+      const r = { x0: cx - hx, x1: cx + hx, z0: cz - hz, z1: cz + hz };
+      if (!blocked(r) && Math.abs(cx) < 70 && cz < 135) {
+        placed.push(r);
+        const rot = Math.atan2(ux, uz);
+        b.box(depth, h, width, houseColors[Math.floor(rand() * houseColors.length)], cx, h / 2, cz, rot);
+        const roof = new THREE.ConeGeometry(Math.max(width, depth) * 0.78, 1.6, 4);
+        roof.rotateY(Math.PI / 4);
+        roof.scale(depth / Math.max(width, depth), 1, width / Math.max(width, depth));
+        b.add(roof, roofColors[Math.floor(rand() * roofColors.length)], new THREE.Matrix4().makeRotationY(rot).setPosition(cx, h + 0.8, cz));
+        // 庭木
+        if (rand() < 0.55) {
+          const tx = w.x1 + ux * (t + rand() * width) + w.nx * 0.9;
+          const tz = w.z1 + uz * (t + rand() * width) + w.nz * 0.9;
+          addTree(b, rand, tx, tz);
+        }
       }
-      z += w + 1.5 + rand() * 3;
+      t += width + 1.5 + rand() * 3;
     }
   }
-
-  // 電柱（石がぶつかる障害物）
-  const poleMat = lambert(0x8e8a84);
-  for (let z = 10, i = 0; z < ROAD_LENGTH - 6; z += 22 + rand() * 8, i++) {
-    const sx = i % 2 === 0 ? 1 : -1;
-    const px = sx * (WALL_X - 0.75 - 0.16);
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 8, 8), poleMat);
-    pole.position.set(px, 4, z);
-    pole.castShadow = true;
-    group.add(pole);
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.08, 0.08), poleMat);
-    bar.position.set(px, 7.4, z);
-    bar.castShadow = true;
-    group.add(bar);
-    poles.push({ x: px, z, radius: 0.16 });
-  }
-
-  return { group, poles };
 }
 
-function makeTree(rand: () => number): THREE.Group {
-  const tree = new THREE.Group();
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 1.4, 6), lambert(0x7a5b3e));
-  trunk.position.y = 0.7;
-  trunk.castShadow = true;
-  tree.add(trunk);
+function addTree(b: Batcher, rand: () => number, x: number, z: number) {
+  b.add(new THREE.CylinderGeometry(0.08, 0.12, 1.4, 6), 0x7a5b3e, new THREE.Matrix4().setPosition(x, 0.7, z));
   const s = 0.9 + rand() * 0.6;
-  const leaves = new THREE.Mesh(new THREE.IcosahedronGeometry(s, 0), lambert(rand() < 0.5 ? 0x6f8f4e : 0x7f9d55));
-  leaves.position.y = 1.4 + s * 0.7;
-  leaves.castShadow = true;
-  tree.add(leaves);
-  return tree;
+  b.add(new THREE.IcosahedronGeometry(s, 0), rand() < 0.5 ? 0x6f8f4e : 0x7f9d55, new THREE.Matrix4().setPosition(x, 1.4 + s * 0.7, z));
 }
 
-function buildSchool(group: THREE.Group) {
-  const school = new THREE.Mesh(new THREE.BoxGeometry(22, 7, 6), lambert(0xe6e0d2));
-  school.position.set(0, 3.5, START_WALL_Z - 10);
-  school.castShadow = true;
-  group.add(school);
-  const clock = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.1, 16), lambert(0xffffff));
-  clock.rotation.x = Math.PI / 2;
-  clock.position.set(0, 5.6, START_WALL_Z - 6.9);
-  group.add(clock);
+function buildSchool(b: Batcher) {
+  b.box(22, 7, 6, 0xe6e0d2, 0, 3.5, ROAD_A.z0 - 10);
+  const clock = new THREE.CylinderGeometry(0.7, 0.7, 0.1, 16);
+  clock.rotateX(Math.PI / 2);
+  b.add(clock, 0xffffff, new THREE.Matrix4().setPosition(0, 5.6, ROAD_A.z0 - 6.9), false);
 }
 
-function buildHome(group: THREE.Group) {
-  const home = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(6, 3.2, 6), lambert(0xf2e2c4));
-  body.position.y = 1.6;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  home.add(body);
-  const roof = new THREE.Mesh(new THREE.ConeGeometry(4.6, 1.8, 4), lambert(0xb5523b));
-  roof.rotation.y = Math.PI / 4;
-  roof.position.y = 4.1;
-  roof.castShadow = true;
-  home.add(roof);
-  const door = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.9, 1.0), lambert(0x7a5236));
-  door.position.set(-3.01, 0.95, 0);
-  home.add(door);
-  home.position.set(WALL_X + 4.5, 0, HOME_GATE.z);
-  group.add(home);
+const homeLot = (): Rect => ({ x0: HOME_GATE_X - 4, x1: HOME_GATE_X + 4, z0: HOME_ROAD.z1, z1: HOME_ROAD.z1 + 9 });
 
-  // 門の前の目印（玄関マット風）
-  const mat = new THREE.Mesh(new THREE.PlaneGeometry(HOME_GATE.depth, HOME_GATE.halfWidth * 2), lambert(0xd9a35a));
-  mat.rotation.x = -Math.PI / 2;
-  mat.position.set(HOME_GATE.x, 0.004, HOME_GATE.z);
-  mat.receiveShadow = true;
-  group.add(mat);
+function buildHome(b: Batcher) {
+  const cz = HOME_ROAD.z1 + 5.2;
+  b.box(6.4, 3.2, 6, 0xf2e2c4, HOME_GATE_X, 1.6, cz);
+  const roof = new THREE.ConeGeometry(4.8, 1.8, 4);
+  roof.rotateY(Math.PI / 4);
+  b.add(roof, 0xb5523b, new THREE.Matrix4().setPosition(HOME_GATE_X, 4.1, cz));
+  b.box(1.0, 1.9, 0.1, 0x7a5236, HOME_GATE_X, 0.95, cz - 3.01, 0, false);
+  // 門柱と門扉
+  for (const dx of [-1, 1]) b.box(0.3, 1.5, 0.3, 0x8f8577, HOME_GATE_X + dx * 1.35, 0.75, HOME_ROAD.z1 + 0.1);
+  b.box(2.4, 0.9, 0.05, 0x5b5148, HOME_GATE_X, 0.6, HOME_ROAD.z1 + 0.12);
+  // 玄関マット（ゴール）
+  flat(b, HOME_MAT, 0.005, 0xd9a35a);
+}
 
-  // 門柱
-  for (const dz of [-1, 1]) {
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.5, 0.3), lambert(0x8f8577));
-    post.position.set(WALL_X + 0.1, 0.75, HOME_GATE.z + dz * (HOME_GATE.halfWidth + 0.2));
-    post.castShadow = true;
-    group.add(post);
+function buildPoles(b: Batcher) {
+  for (const p of POLES) {
+    b.add(new THREE.CylinderGeometry(0.12, 0.16, 8, 8), 0x8e8a84, new THREE.Matrix4().setPosition(p.x, 4, p.z));
+    b.box(1.4, 0.08, 0.08, 0x8e8a84, p.x, 7.4, p.z, p.x === POLES[3].x ? Math.PI / 2 : 0);
+  }
+  // 抜け道の角のカーブミラー（見通しの悪さの目印）
+  for (const [x, z] of [[3.6, 27.4], [-3.6, 33.6]] as const) {
+    b.add(new THREE.CylinderGeometry(0.04, 0.04, 2.6, 6), 0xd76a3a, new THREE.Matrix4().setPosition(x, 1.3, z));
+    const mirror = new THREE.CylinderGeometry(0.35, 0.35, 0.06, 12);
+    mirror.rotateX(Math.PI / 2);
+    b.add(mirror, 0xd76a3a, new THREE.Matrix4().makeRotationY(x > 0 ? -0.6 : Math.PI - 0.6).setPosition(x, 2.6, z));
   }
 }
 
-/** 石が家の前で止まったか */
-export function isAtHome(x: number, z: number): boolean {
-  return Math.abs(z - HOME_GATE.z) <= HOME_GATE.halfWidth && Math.abs(x - HOME_GATE.x) <= HOME_GATE.depth / 2;
-}
+const overlaps = (a: Rect, r: Rect, m: number) => a.x0 - m < r.x1 && a.x1 + m > r.x0 && a.z0 - m < r.z1 && a.z1 + m > r.z0;

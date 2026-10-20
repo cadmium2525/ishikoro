@@ -2,6 +2,7 @@
 export class Sfx {
   private ctx: AudioContext | null = null;
   private noise: AudioBuffer | null = null;
+  private trafficGain: GainNode | null = null;
 
   unlock() {
     if (!this.ctx) {
@@ -14,6 +15,59 @@ export class Sfx {
       for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
+    if (!this.trafficGain) this.startTraffic();
+  }
+
+  /** 車の走行音。近い車ほど大きく（level 0..1） */
+  setTraffic(level: number) {
+    if (!this.ctx || !this.trafficGain) return;
+    this.trafficGain.gain.setTargetAtTime(level * level * 0.5, this.ctx.currentTime, 0.15);
+  }
+
+  /** 側溝に落ちた音 */
+  plop() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    const t = ctx.currentTime + 0.12;
+    osc.frequency.setValueAtTime(700, t);
+    osc.frequency.exponentialRampToValueAtTime(180, t + 0.15);
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(t + 0.25);
+  }
+
+  /** 車にはじかれた鈍い音 */
+  thud() {
+    this.click(260, 0.9, 0.12);
+    this.click(1500, 0.5, 0.06);
+  }
+
+  private startTraffic() {
+    const ctx = this.ctx!;
+    // ブラウンノイズをループさせ、低域だけ通してエンジン・タイヤ音の代わりにする
+    const len = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+      d[i] = last * 3.5;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 420;
+    this.trafficGain = ctx.createGain();
+    this.trafficGain.gain.value = 0;
+    src.connect(filter).connect(this.trafficGain).connect(ctx.destination);
+    src.start();
   }
 
   /** 靴が石に当たる乾いた音 */
