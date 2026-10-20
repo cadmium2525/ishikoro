@@ -155,17 +155,17 @@ export class Kid {
         break;
       }
       case 'windup':
-        // 右足を後ろへ引く
-        legR = -0.3 - this.windup * 0.9;
-        legL = 0.05;
+        // 左足を後ろへ引く
+        legL = -0.3 - this.windup * 0.9;
+        legR = 0.05;
         lean = -0.05 - this.windup * 0.08;
         break;
       case 'kick': {
         this.kickT += dt;
         const k = Math.min(1, this.kickT / 0.12);
         const back = -0.3 - this.windup * 0.9;
-        legR = back + (1.1 + this.windup * 0.4 - back) * easeOut(k);
-        legL = 0.05;
+        legL = back + (1.1 + this.windup * 0.4 - back) * easeOut(k);
+        legR = 0.05;
         lean = 0.08;
         if (this.kickT > 0.45) this.pose = 'move';
         break;

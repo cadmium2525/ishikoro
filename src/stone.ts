@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRng } from './rng';
-import { POLES, WALLS, type Rect } from './level';
+import { CURB_HEIGHT, CURBS, groundAt, POLES, WALLS, type Rect } from './level';
 
 const G = 9.8;
 /** スピンによる横方向加速度の最大値 [m/s²] */
@@ -64,7 +64,7 @@ export class Stone {
   }
 
   place(x: number, z: number) {
-    this.position.set(x, this.traits.radius, z);
+    this.position.set(x, groundAt(x, z) + this.traits.radius, z);
     this.velocity.set(0, 0, 0);
     this.spin = 0;
     this.moving = false;
@@ -89,9 +89,14 @@ export class Stone {
     return Math.hypot(this.velocity.x, this.velocity.z);
   }
 
+  /** 石の中心が地面に接するときの高さ */
+  get floor() {
+    return groundAt(this.position.x, this.position.z) + this.traits.radius;
+  }
+
   /** 地面に接しているか（バウンド中は false） */
   get onGround() {
-    return this.position.y <= this.traits.radius + 0.02 && this.velocity.y <= 0;
+    return this.position.y <= this.floor + 0.02 && this.velocity.y <= 0;
   }
 
   /**
@@ -119,12 +124,15 @@ export class Stone {
     // 縦方向：浮いているか縦の速度が残っていれば重力、着地でバウンド。
     // 接地の判定に誤差の幅を持たせると「浮いても接地してもいない」状態で
     // 摩擦がかからず転がり続けるので、着地したら必ず y と v.y を揃える。
-    const airborne = p.y > t.radius || v.y !== 0;
+    const floor = this.floor;
+    // 切り下げから歩道へ上がったときは段差の上に乗せる
+    if (p.y < floor) p.y = floor;
+    const airborne = p.y > floor || v.y !== 0;
     if (airborne) {
       v.y -= G * dt;
       p.y += v.y * dt;
-      if (p.y <= t.radius) {
-        p.y = t.radius;
+      if (p.y <= floor) {
+        p.y = floor;
         if (-v.y > 0.9) {
           this.events.onImpact?.(Math.min(1, -v.y / 5));
           v.y = -v.y * t.restitution * 0.6;
@@ -135,7 +143,7 @@ export class Stone {
         }
       }
     }
-    const grounded = p.y <= t.radius && v.y === 0;
+    const grounded = p.y <= floor && v.y === 0;
 
     let speed = Math.hypot(v.x, v.z);
     if (speed > 1e-4) {
@@ -208,6 +216,18 @@ export class Stone {
       this.pushOut(w.x1 + sx * tt, w.z1 + sz * tt, r);
     }
     for (const pole of POLES) this.pushOut(pole.x, pole.z, r + pole.radius);
+    // 縁石：車道側にいて、石の底が縁石の上面より低いときだけ跳ね返る
+    if (p.y - r < CURB_HEIGHT - 0.02) {
+      for (const c of CURBS) {
+        const sx = c.x2 - c.x1;
+        const sz = c.z2 - c.z1;
+        const tt = ((p.x - c.x1) * sx + (p.z - c.z1) * sz) / (sx * sx + sz * sz);
+        if (tt < 0 || tt > 1) continue;
+        const side = (p.x - c.x1) * c.nx + (p.z - c.z1) * c.nz;
+        if (side < 0 || side >= r) continue;
+        this.pushOut(p.x - side * c.nx, p.z - side * c.nz, r);
+      }
+    }
     if (p.y < 0.8) {
       for (const o of obstacles) {
         this.pushOut(Math.max(o.x0, Math.min(o.x1, p.x)), Math.max(o.z0, Math.min(o.z1, p.z)), r);
@@ -266,7 +286,7 @@ export class Stone {
     this.lost = 'flying';
     this.moving = false;
     this.velocity.set(vx, vy, vz);
-    this.position.y = Math.max(this.position.y, this.traits.radius + 0.05);
+    this.position.y = Math.max(this.position.y, this.floor + 0.05);
   }
 
   private updateLost(dt: number) {
@@ -296,8 +316,8 @@ export class Stone {
       case 'flying': {
         v.y -= G * dt;
         p.addScaledVector(v, dt);
-        if (p.y < r) {
-          p.y = r;
+        if (p.y < this.floor) {
+          p.y = this.floor;
           v.y = Math.abs(v.y) * 0.4;
           v.x *= 0.7;
           v.z *= 0.7;

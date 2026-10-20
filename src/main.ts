@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildWorld } from './world';
-import { carRoadAt, hazardAt, isAtHome, routePoint, routeProgress, ROUTE_LENGTH, START } from './level';
+import { carRoadAt, groundAt, hazardAt, isAtHome, routePoint, routeProgress, ROUTE_LENGTH, sidewalkAt, START } from './level';
 import { Stone } from './stone';
 import { Kid, KICK_OFFSET } from './kid';
 import { KickInputController, OVERCHARGE_MAX, type KickInput } from './input';
@@ -10,7 +10,7 @@ import { Sfx } from './audio';
 import { clamp, damp, gaussian } from './rng';
 
 type GameState = 'title' | 'ready' | 'kicking' | 'rolling' | 'chasing' | 'arrived' | 'clear' | 'lost' | 'over';
-type LostReason = 'gutter' | 'grass' | 'car';
+type LostReason = 'gutter' | 'grass' | 'grate' | 'car';
 
 const FIXED_DT = 1 / 120;
 /** 足が石に当たるまでの時間（キックモーションと合わせる） */
@@ -22,6 +22,7 @@ const STORAGE_KEY = 'ishikoro.records.v1';
 const LOST_TEXT: Record<LostReason, string> = {
   gutter: '石が側溝に落ちてしまった。',
   grass: '石が草むらに消えてしまった。',
+  grate: '石が集水ますの格子にはまってしまった。',
   car: '石が車にはじかれてしまった。',
 };
 
@@ -102,8 +103,11 @@ const camFocus = new THREE.Vector3();
 let camYaw = 0;
 let camDist = 6;
 let camHeight = 5;
-/** 主人公が石を隠さないよう、右斜め後ろからの視点 */
-const CAM_SIDE_ANGLE = 0.38;
+/**
+ * 車道側の斜め後ろからの視点。歩道の先と、迫ってくる車を同時に見せる。
+ * 主人公は左足で蹴るので、カメラ側に体がかぶらない。
+ */
+const CAM_SIDE_ANGLE = -0.38;
 
 interface Records {
   cleared: number;
@@ -170,11 +174,11 @@ function aimCenter(): number {
   return Math.atan2(tx - p.x, tz - p.z);
 }
 
-/** 右足が石の真後ろに来る立ち位置 */
+/** 左足が石の真後ろに来る立ち位置 */
 function kickSpot(heading: number, out = new THREE.Vector3()): THREE.Vector3 {
   const p = stone.position;
-  // 主人公のローカル +X（左手側）方向へ右足の分だけずらす
-  const side = 0.09;
+  // 主人公のローカル -X（右手側）方向へ左足の分だけずらす
+  const side = -0.09;
   return out.set(
     p.x - Math.sin(heading) * KICK_OFFSET + Math.cos(heading) * side,
     0,
@@ -183,28 +187,40 @@ function kickSpot(heading: number, out = new THREE.Vector3()): THREE.Vector3 {
 }
 
 /**
- * 子どもを目標へ動かす。車道へ踏み出す前は信号・車を確認して待つ。
+ * 子どもを目標へ動かす。歩道を歩き、車道へ降りる前は信号・車を確認して待つ。
  * 子どもは車にひかれない（車は子どもに気づいて止まる）が、石には気づかない。
  */
 function kidGo(target: THREE.Vector3, speed: number, dt: number): 'moving' | 'arrived' | 'waiting' {
   const p = kid.position;
-  const dx = target.x - p.x;
-  const dz = target.z - p.z;
+  // 車道にある目標へは、まず今いる歩道の上を一番近いところまで歩いてから降りる
+  let goal = target;
+  const sw = sidewalkAt(p.x, p.z);
+  if (sw && carRoadAt(target.x, target.z)) {
+    const wx = clamp(target.x, sw.x0 + 0.25, sw.x1 - 0.25);
+    const wz = clamp(target.z, sw.z0 + 0.25, sw.z1 - 0.25);
+    // 近くまで来ていれば、そこから車道へ降りる（行き来して止まらないよう余裕を持たせる）
+    if (Math.hypot(wx - p.x, wz - p.z) > 0.6) goal = tmpWaypoint.set(wx, 0, wz);
+  }
+
+  const dx = goal.x - p.x;
+  const dz = goal.z - p.z;
   const d = Math.hypot(dx, dz);
   if (d > 0.02) {
     const probe = Math.min(d, speed * dt + 0.3);
     const nx = p.x + (dx / d) * probe;
     const nz = p.z + (dz / d) * probe;
     const next = carRoadAt(nx, nz);
-    if (next && next !== carRoadAt(p.x, p.z) && !traffic.mayCross(next, nx)) {
-      waitingFor = next.signal ? 'signal' : 'car';
+    if (next && next !== carRoadAt(p.x, p.z) && !traffic.mayCross(next, nx, nz, target.x, target.z)) {
+      waitingFor = next.crossing === 'signal' ? 'signal' : 'car';
       kid.turnTo(Math.atan2(dx, dz), dt, 6);
       return 'waiting';
     }
   }
   waitingFor = null;
-  return kid.moveToward(target, speed, dt) ? 'arrived' : 'moving';
+  const reached = kid.moveToward(goal, speed, dt);
+  return reached && goal === target ? 'arrived' : 'moving';
 }
+const tmpWaypoint = new THREE.Vector3();
 
 function enterReady() {
   state = 'ready';
@@ -347,6 +363,8 @@ function fixedUpdate(dt: number) {
     }
   }
   kid.update(dt);
+  // 歩道の段差を上り下りする
+  kid.position.y += (groundAt(kid.position.x, kid.position.z) - kid.position.y) * damp(18, dt);
 }
 
 function recordProgress() {
@@ -398,7 +416,7 @@ function updateCamera(dt: number) {
 
   if (state === 'title') {
     // 学校の前から通学路を見渡す
-    focus = tmpFocus.set(0, 0, 10);
+    focus = tmpFocus.set(1.5, 0, 12);
     dist = 12;
     height = 7;
     rate = 1;
@@ -473,8 +491,10 @@ function updateHud() {
   if (el.msg.textContent !== msg) el.msg.textContent = msg;
   el.msg.classList.toggle('on', msg !== '');
 
-  const near = state === 'title' ? 0 : traffic.updateWarnings(stone.position.x, stone.position.z);
-  sfx.setTraffic(Math.max(near, 0.15));
+  if (state !== 'title') traffic.updateWarnings(stone.position.x, stone.position.z);
+  // 走行音：見ている場所の近くを車が通るほど大きく
+  sfx.setTraffic(Math.max(0.12, 1 - traffic.nearestCar(camFocus.x, camFocus.z) / 18));
+  guide.group.position.y = groundAt(stone.position.x, stone.position.z) + 0.01;
 }
 
 function resize() {

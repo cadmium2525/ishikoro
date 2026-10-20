@@ -37,6 +37,7 @@ export class AimGuide {
   update(origin: THREE.Vector3, center: number, aim: number, power: number, spin: number, charging: boolean) {
     this.group.position.x = origin.x;
     this.group.position.z = origin.z;
+    // 高さ（歩道の段差）は呼び出し側で合わせる
     this.fan.rotation.y = center;
 
     const length = charging ? 0.5 + Math.min(power, 1) * 3.2 : 1.3;
