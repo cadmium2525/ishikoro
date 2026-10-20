@@ -134,9 +134,9 @@ function buildRoadMarkings(b: Batcher) {
   flat(b, { x0: (A.x0 + A.x1) / 2 + 0.1, x1: A.x1 - 0.2, z0: B.z0 - 0.75, z1: B.z0 - 0.45 }, y, white);
   flat(b, { x0: A.x0 + 0.2, x1: (A.x0 + A.x1) / 2 - 0.1, z0: B.z1 + 0.45, z1: B.z1 + 0.75 }, y, white);
 
-  // 横断歩道（大通りを渡る）
-  for (let x = CROSSWALK.x0 + 0.15; x < CROSSWALK.x1 - 0.2; x += 0.5) {
-    flat(b, { x0: x, x1: x + 0.3, z0: B.z0 + 0.3, z1: B.z1 - 0.3 }, y, white);
+  // 横断歩道（大通りを渡る）。白線は車の進む向きに長く、渡る向きに並ぶ（はしご状）
+  for (let z = B.z0 + 0.35; z < B.z1 - 0.3; z += 0.9) {
+    flat(b, { x0: CROSSWALK.x0 + 0.1, x1: CROSSWALK.x1 - 0.1, z0: z, z1: z + 0.45 }, y, white);
   }
 
   // 集水ます：格子のふた
