@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRng } from './rng';
 import {
-  ALLEY, CROSSWALK, CURB_HEIGHT, CURBS, GRASS_LOT, GRATES, GUTTERS, HOME_GATE_X, HOME_MAT, HOME_ROAD, MAIN_ROAD, PAVED, POLES,
+  ALLEY, CROSSWALK, CURB_HEIGHT, CURBS, GRASS_LOT, GRATES, GUTTERS, HOME_GATE_X, HOME_MAT, HOME_PORCH, HOME_ROAD, MAIN_ROAD, PAVED, POLES,
   RAMPS, ROAD_A, ROADWAYS, SIDEWALKS, WALLS, type Rect,
 } from './level';
 
@@ -276,11 +276,19 @@ function buildHome(b: Batcher) {
   roof.rotateY(Math.PI / 4);
   b.add(roof, 0xb5523b, new THREE.Matrix4().setPosition(HOME_GATE_X, 4.1, cz));
   b.box(1.0, 1.9, 0.1, 0x7a5236, HOME_GATE_X, 0.95, cz - 3.01, 0, false);
-  // 門柱と門扉
-  for (const dx of [-1, 1]) b.box(0.3, 1.5, 0.3, 0x8f8577, HOME_GATE_X + dx * 1.35, 0.75, HOME_ROAD.z1 + 0.1);
-  b.box(2.4, 0.9, 0.05, 0x5b5148, HOME_GATE_X, 0.6, HOME_ROAD.z1 + 0.12);
-  // 玄関マット（ゴール）
+  // 門柱（門は開いている）と、玄関までの両脇の生け垣
+  const half = (HOME_PORCH.x1 - HOME_PORCH.x0) / 2;
+  for (const dx of [-1, 1]) {
+    b.box(0.3, 1.5, 0.3, 0x8f8577, HOME_GATE_X + dx * (half + 0.15), 0.75, HOME_ROAD.z1 + 0.1);
+    const len = HOME_PORCH.z1 - HOME_PORCH.z0;
+    b.box(0.4, 0.7, len, 0x6f8f4e, HOME_GATE_X + dx * (half + 0.2), 0.35, (HOME_PORCH.z0 + HOME_PORCH.z1) / 2);
+  }
+  // 門の前から玄関まで（ゴール）
   flat(b, HOME_MAT, 0.005, 0xd9a35a);
+  // 飛び石
+  for (let z = HOME_PORCH.z0 + 0.4; z < HOME_PORCH.z1 - 0.2; z += 0.7) {
+    b.box(0.7, 0.02, 0.45, 0xb8b0a0, HOME_GATE_X, 0.012, z, 0, false);
+  }
 }
 
 function buildPoles(b: Batcher) {

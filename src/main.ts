@@ -477,7 +477,8 @@ const tmpFocus = new THREE.Vector3();
 
 function updateHud() {
   const s = routeProgress(stone.position.x, stone.position.z);
-  el.dist.textContent = String(Math.max(0, Math.round(ROUTE_LENGTH - s)));
+  const home = state === 'arrived' || state === 'clear';
+  el.dist.textContent = home ? '0' : String(Math.max(0, Math.round(ROUTE_LENGTH - s)));
   el.kicks.textContent = String(kicks);
   const charging = state === 'ready' && input.phase === 'charge';
   el.power.classList.toggle('on', charging);

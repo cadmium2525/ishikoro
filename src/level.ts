@@ -106,6 +106,10 @@ const SIDE_Z1 = 32;
 const ALLEY_Z0 = 108;
 const ALLEY_Z1 = 112;
 const ALLEY_X0 = -40;
+/** 家の門（路地の北側）と、門から玄関までのアプローチ */
+export const HOME_GATE_X = -30;
+const GATE_HALF = 1.2;
+const PORCH_Z1 = ALLEY_Z1 + 2.2;
 
 /** 道Aの車道 */
 export const ROAD_A = rect(RA_X0, RA_X1, -40, 200);
@@ -188,7 +192,13 @@ export const WALLS: WallSeg[] = [
   wall(SW_X1, -40, SW_X1, -3, -1, 0, false),
   // 路地
   wall(ALLEY_X0, ALLEY_Z0, SW_X0, ALLEY_Z0, 0, -1),
-  wall(ALLEY_X0, ALLEY_Z1, SW_X0, ALLEY_Z1, 0, 1, false),
+  // 路地の北側は家の門のところだけ開いている
+  wall(ALLEY_X0, ALLEY_Z1, HOME_GATE_X - GATE_HALF, ALLEY_Z1, 0, 1, false),
+  wall(HOME_GATE_X + GATE_HALF, ALLEY_Z1, SW_X0, ALLEY_Z1, 0, 1, false),
+  // 門から玄関までの両脇の生け垣と、玄関
+  wall(HOME_GATE_X - GATE_HALF, ALLEY_Z1, HOME_GATE_X - GATE_HALF, PORCH_Z1, -1, 0, false),
+  wall(HOME_GATE_X + GATE_HALF, ALLEY_Z1, HOME_GATE_X + GATE_HALF, PORCH_Z1, 1, 0, false),
+  wall(HOME_GATE_X - GATE_HALF, PORCH_Z1, HOME_GATE_X + GATE_HALF, PORCH_Z1, 0, 1, false),
   wall(ALLEY_X0, ALLEY_Z0, ALLEY_X0, ALLEY_Z1, -1, 0),
 ];
 
@@ -255,9 +265,10 @@ export const CAR_ROADS: CarRoad[] = [
   },
 ];
 
-/** 家の門の前のマット。ここで石が止まればクリア */
-export const HOME_GATE_X = -30;
-export const HOME_MAT = rect(HOME_GATE_X - 1.2, HOME_GATE_X + 1.2, ALLEY_Z1 - 1.7, ALLEY_Z1);
+/** 門の前から玄関まで。ここで石が止まればクリア */
+export const HOME_MAT = rect(HOME_GATE_X - GATE_HALF, HOME_GATE_X + GATE_HALF, ALLEY_Z1 - 0.8, PORCH_Z1);
+/** 門から玄関までのアプローチ（描画用） */
+export const HOME_PORCH = rect(HOME_GATE_X - GATE_HALF, HOME_GATE_X + GATE_HALF, ALLEY_Z1, PORCH_Z1);
 export const HOME_ROAD = ALLEY;
 
 export const START = { x: -1.6, z: 1.0 };
@@ -269,7 +280,7 @@ export const ROUTE: ReadonlyArray<readonly [number, number]> = [
   [SW_MID, -2],
   [SW_MID, ALLEY_MID],
   [HOME_GATE_X, ALLEY_MID],
-  [HOME_GATE_X, ALLEY_Z1 - 0.8],
+  [HOME_GATE_X, PORCH_Z1 - 0.8],
 ];
 
 export const inRect = (r: Rect, x: number, z: number, margin = 0) =>
