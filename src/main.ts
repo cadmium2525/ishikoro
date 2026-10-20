@@ -209,7 +209,7 @@ function kidGo(target: THREE.Vector3, speed: number, dt: number): 'moving' | 'ar
 function enterReady() {
   state = 'ready';
   stateTime = 0;
-  kid.setPose('idle');
+  kid.setPose('move');
   input.enable();
 }
 
@@ -295,7 +295,7 @@ function fixedUpdate(dt: number) {
       // 狙い中は基準方向、構えたら確定した方向へ体を向ける
       kid.turnTo(charging ? aim : center, dt, charging ? 14 : 6);
       kidGo(kickSpot(kid.heading, tmpTarget), 2, dt);
-      kid.setPose(charging ? 'windup' : 'idle');
+      kid.setPose(charging ? 'windup' : 'move');
       kid.setWindup(Math.min(1, input.power));
       guide.update(stone.position, center, aim, input.power, input.spin, charging);
       break;
@@ -311,14 +311,14 @@ function fixedUpdate(dt: number) {
       }
       break;
     case 'rolling': {
-      // 石を見守りながら少し後ろを付いていく
-      const d = Math.hypot(stone.position.x - kid.position.x, stone.position.z - kid.position.z);
-      if (stateTime > 0.35 && d > 2.2) {
-        const r = kidGo(stone.position, 3.2, dt);
-        kid.setPose(r === 'moving' ? 'run' : 'idle');
+      // 石を見守りながら少し後ろを付いていく（近づくと減速するので止まり際もなめらか）
+      const dx = stone.position.x - kid.position.x;
+      const dz = stone.position.z - kid.position.z;
+      const d = Math.hypot(dx, dz);
+      if (stateTime > 0.35 && d > 1.9) {
+        kidGo(tmpTarget.set(stone.position.x - (dx / d) * 1.8, 0, stone.position.z - (dz / d) * 1.8), 3.4, dt);
       } else if (stateTime > 0.45) {
-        kid.setPose('idle');
-        kid.turnTo(Math.atan2(stone.position.x - kid.position.x, stone.position.z - kid.position.z), dt, 6);
+        kid.turnTo(Math.atan2(dx, dz), dt, 6);
       }
       if (!stone.moving) {
         state = isAtHome(stone.position.x, stone.position.z) ? 'arrived' : 'chasing';
@@ -327,16 +327,13 @@ function fixedUpdate(dt: number) {
       break;
     }
     case 'chasing': {
-      const r = kidGo(kickSpot(aimCenter(), tmpTarget), 4.2, dt);
-      kid.setPose(r === 'moving' ? 'run' : 'idle');
-      if (r === 'arrived') enterReady();
+      if (kidGo(kickSpot(aimCenter(), tmpTarget), 4.2, dt) === 'arrived') enterReady();
       break;
     }
     case 'arrived': {
       // 家の前の石まで歩いて行き、足元を見下ろす
       const target = tmpTarget.set(stone.position.x, 0, stone.position.z - 0.45);
       const there = kidGo(target, 1.6, dt) === 'arrived';
-      kid.setPose(there ? 'idle' : 'walk');
       if (there) kid.turnTo(0, dt, 5);
       if (stateTime > 2.4) showClear();
       break;
@@ -344,7 +341,6 @@ function fixedUpdate(dt: number) {
     case 'lost': {
       // その場で立ち止まり、石の行方を見る
       stone.step(dt);
-      kid.setPose('idle');
       kid.turnTo(Math.atan2(stone.position.x - kid.position.x, stone.position.z - kid.position.z), dt, 4);
       if (stateTime > 2.6) showGameOver();
       break;

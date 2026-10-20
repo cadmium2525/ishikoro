@@ -116,8 +116,10 @@ export class Stone {
     const p = this.position;
     const v = this.velocity;
 
-    // 縦方向：浮いていれば重力、着地でバウンド
-    const airborne = p.y > t.radius + 1e-4 || v.y > 0;
+    // 縦方向：浮いているか縦の速度が残っていれば重力、着地でバウンド。
+    // 接地の判定に誤差の幅を持たせると「浮いても接地してもいない」状態で
+    // 摩擦がかからず転がり続けるので、着地したら必ず y と v.y を揃える。
+    const airborne = p.y > t.radius || v.y !== 0;
     if (airborne) {
       v.y -= G * dt;
       p.y += v.y * dt;
@@ -133,7 +135,7 @@ export class Stone {
         }
       }
     }
-    const grounded = p.y <= t.radius + 1e-4 && v.y === 0;
+    const grounded = p.y <= t.radius && v.y === 0;
 
     let speed = Math.hypot(v.x, v.z);
     if (speed > 1e-4) {

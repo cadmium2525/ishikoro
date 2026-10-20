@@ -6,7 +6,11 @@ const lambert = (color: number | THREE.Color) => new THREE.MeshLambertMaterial({
 /** 足元の石までの距離（キック位置） */
 export const KICK_OFFSET = 0.42;
 
-type Pose = 'idle' | 'walk' | 'run' | 'windup' | 'kick';
+/** move：速度に合わせて立つ・歩く・走るを自動で切り替える */
+type Pose = 'move' | 'windup' | 'kick';
+
+const ACCEL = 7;
+const DECEL = 10;
 
 /** 仮の主人公。ランドセルを背負った小学生のローポリモデル。 */
 export class Kid {
@@ -19,8 +23,11 @@ export class Kid {
   private readonly armL = new THREE.Group();
   private readonly armR = new THREE.Group();
   private readonly body = new THREE.Group();
-  private pose: Pose = 'idle';
+  private pose: Pose = 'move';
   private cycle = 0;
+  /** 実際の移動速度。目標速度へなめらかに近づける */
+  private speed = 0;
+  private movedThisFrame = false;
   private windup = 0;
   private kickT = 0;
 
@@ -99,8 +106,8 @@ export class Kid {
     this.windup = amount;
   }
 
-  /** 目標地点へ移動。到着したら true */
-  moveToward(target: THREE.Vector3, speed: number, dt: number): boolean {
+  /** 目標地点へ移動。到着したら true。近づくほど減速して止まる */
+  moveToward(target: THREE.Vector3, maxSpeed: number, dt: number): boolean {
     const p = this.root.position;
     const dx = target.x - p.x;
     const dz = target.z - p.z;
@@ -110,10 +117,13 @@ export class Kid {
       p.z = target.z;
       return true;
     }
-    const step = Math.min(d, speed * dt);
+    const desired = Math.min(maxSpeed, 0.5 + d * 2.5);
+    this.speed = desired > this.speed ? Math.min(desired, this.speed + ACCEL * dt) : Math.max(desired, this.speed - DECEL * dt);
+    const step = Math.min(d, this.speed * dt);
     p.x += (dx / d) * step;
     p.z += (dz / d) * step;
     if (d > 0.15) this.turnTo(Math.atan2(dx, dz), dt, 10);
+    this.movedThisFrame = true;
     return false;
   }
 
@@ -124,21 +134,24 @@ export class Kid {
   }
 
   update(dt: number) {
+    if (!this.movedThisFrame) this.speed = Math.max(0, this.speed - DECEL * dt);
+    this.movedThisFrame = false;
     this.root.rotation.y = this.heading;
     let legL = 0;
     let legR = 0;
     let bob = 0;
     let lean = 0;
     switch (this.pose) {
-      case 'walk':
-      case 'run': {
-        const run = this.pose === 'run';
-        this.cycle += dt * (run ? 13 : 8);
-        const amp = run ? 0.75 : 0.45;
+      case 'move': {
+        // 歩幅・ピッチ・前傾を速度から連続的に決める（姿勢の切り替えでカクつかない）
+        const run = Math.min(1, this.speed / 4.2);
+        const gait = Math.min(1, this.speed / 0.6);
+        this.cycle += dt * (5 + this.speed * 2);
+        const amp = (0.25 + 0.5 * run) * gait;
         legL = Math.sin(this.cycle) * amp;
         legR = -legL;
-        bob = Math.abs(Math.cos(this.cycle)) * (run ? 0.05 : 0.025);
-        lean = run ? 0.15 : 0.04;
+        bob = Math.abs(Math.cos(this.cycle)) * (0.02 + 0.03 * run) * gait;
+        lean = 0.02 * gait + 0.13 * run;
         break;
       }
       case 'windup':
@@ -154,11 +167,9 @@ export class Kid {
         legR = back + (1.1 + this.windup * 0.4 - back) * easeOut(k);
         legL = 0.05;
         lean = 0.08;
-        if (this.kickT > 0.45) this.pose = 'idle';
+        if (this.kickT > 0.45) this.pose = 'move';
         break;
       }
-      default:
-        this.cycle = 0;
     }
     // 回転軸の符号：負で後ろ、正で前
     this.hipL.rotation.x = -legL;

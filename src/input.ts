@@ -6,7 +6,7 @@ export const AIM_RANGE = Math.PI / 3;
 const SWEEP_RATE = 2.1;
 /** 0 から 1 までチャージする時間 [s] */
 const CHARGE_TIME = 1.3;
-/** 1 を超えて溜められる上限（蹴りすぎ） */
+/** 1 を超えて溜められる上限（蹴りすぎ）。超えると 0 に戻る */
 export const OVERCHARGE_MAX = 1.18;
 /** 回転が最大になる横ドラッグ量 [CSS px] */
 const SPIN_DRAG_PX = 70;
@@ -65,7 +65,9 @@ export class KickInputController {
       this.sweepPhase += SWEEP_RATE * dt;
       this.sweep = Math.sin(this.sweepPhase) * AIM_RANGE;
     } else if (this.phase === 'charge') {
-      this.power = Math.min(OVERCHARGE_MAX, this.power + dt / CHARGE_TIME);
+      // 上限まで溜まったら 0 に戻ってまた溜まる
+      this.power += dt / CHARGE_TIME;
+      if (this.power > OVERCHARGE_MAX) this.power -= OVERCHARGE_MAX;
     }
   }
 
