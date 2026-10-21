@@ -42,6 +42,7 @@
       }
       #status b { font-size: 16px; }
       #status.off { opacity: 0; }
+      #clockwrap.late b { color: var(--danger); }
 
       #msg {
         top: calc(max(12px, env(safe-area-inset-top)) + 40px);
@@ -197,6 +198,7 @@
     <div id="status" class="hud">
       <span>いえまで <b id="dist">--</b> m</span>
       <span>けった <b id="kicks">0</b> 回</span>
+      <span id="clockwrap">5時まで <b id="clock">-:--</b></span>
     </div>
     <div id="msg" class="hud"></div>
     <div id="toast" class="hud"></div>

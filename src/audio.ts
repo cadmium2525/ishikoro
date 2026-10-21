@@ -41,6 +41,25 @@ export class Sfx {
     osc.stop(t + 0.25);
   }
 
+  /** 夕方5時のチャイム（キン・コン・カン・コン） */
+  chime() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    [659.3, 523.3, 587.3, 392.0].forEach((f, i) => {
+      const t = ctx.currentTime + i * 0.5;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+      osc.connect(g).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 1.3);
+    });
+  }
+
   /** 車にはじかれた鈍い音 */
   thud() {
     this.click(260, 0.9, 0.12);

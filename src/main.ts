@@ -12,7 +12,7 @@ import { Sfx } from './audio';
 import { clamp, damp, gaussian } from './rng';
 
 type GameState = 'title' | 'ready' | 'kicking' | 'rolling' | 'chasing' | 'arrived' | 'clear' | 'lost' | 'over';
-type LostReason = 'gutter' | 'grass' | 'grate' | 'water' | 'manhole' | 'car' | 'person' | 'dog' | 'cat';
+type LostReason = 'gutter' | 'grass' | 'grate' | 'water' | 'manhole' | 'car' | 'person' | 'bike' | 'dog' | 'cat' | 'time';
 
 const FIXED_DT = 1 / 120;
 /** 足が石に当たるまでの時間（キックモーションと合わせる） */
@@ -30,6 +30,8 @@ const LOST_TEXT: Record<LostReason, string> = {
   person: '石が通りがかりの人に当たってしまった。',
   dog: '石が散歩中の犬に当たってしまった。',
   cat: '石がねこに当たってしまった。',
+  bike: '石が自転車に当たってしまった。',
+  time: '5時のチャイムが鳴ってしまった。',
   car: '石が車にはじかれてしまった。',
 };
 
@@ -39,6 +41,8 @@ const el = {
   status: document.querySelector<HTMLElement>('#status')!,
   dist: document.querySelector<HTMLElement>('#dist')!,
   kicks: document.querySelector<HTMLElement>('#kicks')!,
+  clock: document.querySelector<HTMLElement>('#clock')!,
+  clockWrap: document.querySelector<HTMLElement>('#clockwrap')!,
   msg: document.querySelector<HTMLElement>('#msg')!,
   power: document.querySelector<HTMLElement>('#power')!,
   powerFill: document.querySelector<HTMLElement>('#power .fill')!,
@@ -113,6 +117,8 @@ let state: GameState = 'title';
 let stone!: Stone;
 let kid!: Kid;
 let kicks = 0;
+/** 5時のチャイムまでの残り時間 [s] */
+let timeLeft = 0;
 let stateTime = 0;
 let pendingKick: { angle: number; power: number; spin: number } | null = null;
 let hintShown = true;
@@ -234,6 +240,10 @@ function newRun(fresh: boolean) {
   if (fresh) setupDay(newDaySeed());
   kicks = 0;
   bestProgress = 0;
+  input.sweepRate = { easy: 2.1, normal: 2.7, hard: 3.3 }[level.difficulty];
+  // 門限：道のりに比例。信号や車を待つぶんも少し足す
+  const perMeter = { easy: 2.0, normal: 1.55, hard: 1.25 }[level.difficulty];
+  timeLeft = Math.round(level.routeLength * perMeter + level.crossings * 10);
   records.plays++;
   saveRecords();
   el.overlay.classList.remove('on');
@@ -327,7 +337,9 @@ input.onKick = (k: KickInput) => {
   const center = aimCenter();
   // 蹴りすぎると狙いがぶれ、想定以上に飛ぶ
   const over = Math.max(0, k.power - 1) / (OVERCHARGE_MAX - 1);
-  const angle = center + k.aimOffset + gaussian() * (0.012 + over * 0.2);
+  // 難しい日ほど狙いが少しぶれる
+  const shake = { easy: 0.012, normal: 0.03, hard: 0.05 }[level.difficulty];
+  const angle = center + k.aimOffset + gaussian() * (shake + over * 0.2);
   const power = k.power > 1 ? 1 + over * (0.08 + Math.random() * 0.15) : k.power;
   pendingKick = { angle, power: Math.max(0.03, power), spin: k.spin };
   kid.setWindup(Math.min(1, k.power));
@@ -418,6 +430,18 @@ function fixedUpdate(dt: number) {
       return;
     }
     bestProgress = Math.max(bestProgress, level.routeProgress(stone.position.x, stone.position.z));
+  }
+
+  // 門限の時計は、下校している間だけ進む
+  if (state === 'ready' || state === 'kicking' || state === 'rolling' || state === 'chasing') {
+    timeLeft -= dt;
+    if (timeLeft <= 0) {
+      timeLeft = 0;
+      sfx.chime();
+      stone.velocity.set(0, 0, 0);
+      stone.moving = false;
+      lose('time');
+    }
   }
 
   switch (state) {
@@ -674,6 +698,10 @@ function updateHud() {
   const home = state === 'arrived' || state === 'clear';
   el.dist.textContent = home ? '0' : String(Math.max(0, Math.round(level.routeLength - s)));
   el.kicks.textContent = String(kicks);
+  const t = Math.max(0, Math.ceil(timeLeft));
+  const clock = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+  if (el.clock.textContent !== clock) el.clock.textContent = clock;
+  el.clockWrap.classList.toggle('late', t <= 30);
   const charging = state === 'ready' && input.phase === 'charge';
   el.power.classList.toggle('on', charging);
   el.spin.classList.toggle('on', charging);
@@ -735,6 +763,7 @@ Object.assign(window, {
     day(seed: number) { setupDay(seed); newRun(false); },
     get traffic() { return traffic; },
     get walkers() { return walkers; },
+    set timeLeft(v: number) { timeLeft = v; },
     input,
     /** 石が止まった直後の状態にする（自動テスト用） */
     chase() { input.disable(); state = 'chasing'; stateTime = 0; },

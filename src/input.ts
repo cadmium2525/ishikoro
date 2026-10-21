@@ -2,7 +2,7 @@ import { clamp } from './rng';
 
 /** 方向ガイドの振れ幅（片側） */
 export const AIM_RANGE = Math.PI / 3;
-/** 方向ガイドの往復速度 [rad/s]（sin の位相速度） */
+/** 方向ガイドの往復速度 [rad/s]（sin の位相速度）の初期値。難しさで変わる */
 const SWEEP_RATE = 2.1;
 /** 0 から 1 までチャージする時間 [s] */
 const CHARGE_TIME = 1.3;
@@ -32,6 +32,8 @@ export class KickInputController {
   lockedAim = 0;
   power = 0;
   spin = 0;
+  /** 方向ガイドの往復の速さ（難しいほど速い） */
+  sweepRate = SWEEP_RATE;
 
   onKick?: (input: KickInput) => void;
 
@@ -62,7 +64,7 @@ export class KickInputController {
 
   update(dt: number) {
     if (this.phase === 'aim') {
-      this.sweepPhase += SWEEP_RATE * dt;
+      this.sweepPhase += this.sweepRate * dt;
       this.sweep = Math.sin(this.sweepPhase) * AIM_RANGE;
     } else if (this.phase === 'charge') {
       // 上限まで溜まったら 0 に戻ってまた溜まる

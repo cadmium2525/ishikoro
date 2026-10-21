@@ -4,7 +4,7 @@ import type { Level } from './level';
 import type { Traffic } from './traffic';
 
 /** 石を当ててはいけない相手 */
-export type WalkerKind = 'person' | 'dog' | 'cat';
+export type WalkerKind = 'person' | 'bike' | 'dog' | 'cat';
 
 /** 帰り道の中心からどれだけ横へよけられるか */
 const LATERAL = 0.55;
@@ -32,6 +32,11 @@ interface Person {
   phase: number;
   mesh: THREE.Group;
   legs: THREE.Object3D[];
+  arms: THREE.Object3D[];
+  wheels: THREE.Object3D[];
+  /** 自転車に乗っている（速く、当たり判定も大きい） */
+  bike: boolean;
+  radius: number;
   dog: Dog | null;
 }
 
@@ -50,6 +55,8 @@ interface Cat {
   lTarget: number;
   /** 次に動き出すまで */
   timer: number;
+  /** 転がる石に一度驚いたら、石が止まるまでは驚かない */
+  startled: boolean;
   mesh: THREE.Group;
   x: number;
   z: number;
@@ -71,14 +78,14 @@ export class Walkers {
   constructor(private readonly level: Level) {
     this.rand = createRng(level.seed ^ 0x1b873593);
     const d = level.difficulty;
-    this.target = { easy: 2, normal: 4, hard: 6 }[d];
-    const cats = { easy: 1, normal: 2, hard: 3 }[d];
+    this.target = { easy: 3, normal: 6, hard: 9 }[d];
+    const cats = { easy: 1, normal: 3, hard: 4 }[d];
     for (let i = 0; i < cats; i++) {
       // 車道の上（横断歩道）には座らせない
       let s = 20 + this.rand() * Math.max(10, level.routeLength - 35);
       for (let k = 0; k < 10 && level.carRoadAt(...this.pointAt(s, 0)); k++) s = 20 + this.rand() * Math.max(10, level.routeLength - 35);
       const l = (this.rand() < 0.5 ? -1 : 1) * LATERAL;
-      const cat: Cat = { s, l, lTarget: l, timer: 3 + this.rand() * 6, mesh: buildCat(this.rand), x: 0, z: 0 };
+      const cat: Cat = { s, l, lTarget: l, timer: 3 + this.rand() * 6, startled: false, mesh: buildCat(this.rand), x: 0, z: 0 };
       this.cats.push(cat);
       this.group.add(cat.mesh);
     }
@@ -113,7 +120,7 @@ export class Walkers {
   bodies(): Body[] {
     const out: Body[] = [];
     for (const p of this.people) {
-      out.push({ kind: 'person', x: p.mesh.position.x, z: p.mesh.position.z, radius: 0.26 });
+      out.push({ kind: p.bike ? 'bike' : 'person', x: p.mesh.position.x, z: p.mesh.position.z, radius: p.radius });
       if (p.dog) out.push({ kind: 'dog', x: p.dog.x, z: p.dog.z, radius: 0.26 });
     }
     for (const c of this.cats) out.push({ kind: 'cat', x: c.x, z: c.z, radius: 0.18 });
@@ -146,7 +153,7 @@ export class Walkers {
       for (const o of obstacles) {
         const ahead = (o.s - p.s) * p.dir;
         if (ahead < -0.3 || ahead > 2.2) continue;
-        const need = o.r + 0.26 + PASS_GAP * 0.5;
+        const need = o.r + p.radius + PASS_GAP * 0.5;
         if (Math.abs(p.l - o.l) >= need) continue;
         const side = p.l >= o.l ? 1 : -1;
         const want = o.l + side * need;
@@ -173,7 +180,7 @@ export class Walkers {
       } else {
         p.wait = 0;
         p.s += p.dir * p.speed * dt;
-        p.phase += dt * p.speed * 5;
+        p.phase += dt * p.speed * (p.bike ? 2.2 : 5);
       }
       this.placePerson(p, blocked ? 0 : p.speed, dt);
 
@@ -186,7 +193,7 @@ export class Walkers {
       }
     }
 
-    for (const c of this.cats) this.updateCat(c, dt, kid);
+    for (const c of this.cats) this.updateCat(c, dt, kid, stone, stoneMoving);
   }
 
   // ---------- 内部 ----------
@@ -221,17 +228,20 @@ export class Walkers {
     if (s - stoneS < 12 || s > L.routeLength - 1) return;
     // 多くは向こうから歩いてくる
     const dir: 1 | -1 = this.rand() < 0.7 ? -1 : 1;
-    const withDog = this.rand() < 0.35;
+    const bike = this.rand() < { easy: 0.1, normal: 0.25, hard: 0.35 }[L.difficulty];
+    const withDog = !bike && this.rand() < 0.35;
     const l = (this.rand() * 2 - 1) * LATERAL;
     const person: Person = {
       s,
       l,
       lTarget: l,
       dir,
-      speed: dir < 0 ? 1.0 + this.rand() * 0.4 : 0.7 + this.rand() * 0.3,
+      speed: bike ? 3.0 + this.rand() * 0.6 : dir < 0 ? 1.0 + this.rand() * 0.4 : 0.7 + this.rand() * 0.3,
       wait: 0,
       phase: this.rand() * 6,
-      ...buildPerson(this.rand),
+      ...buildPerson(this.rand, bike),
+      bike,
+      radius: bike ? 0.42 : 0.26,
       dog: null,
     };
     if (withDog) {
@@ -257,9 +267,20 @@ export class Walkers {
     p.mesh.position.set(x, L.groundAt(x, z), z);
     const heading = Math.atan2(fx - x, fz - z);
     p.mesh.rotation.y = heading;
-    const swing = speed > 0 ? Math.sin(p.phase) * 0.5 : 0;
-    p.legs[0].rotation.x = swing;
-    p.legs[1].rotation.x = -swing;
+    if (p.bike) {
+      // ペダルをこぐ脚と、回る車輪
+      const pedal = speed > 0 ? Math.sin(p.phase) * 0.45 : 0;
+      p.legs[0].rotation.x = -0.9 + pedal;
+      p.legs[1].rotation.x = -0.9 - pedal;
+      for (const w of p.wheels) w.rotation.x += (speed * dt) / 0.33;
+    } else {
+      // 脚と、反対側の腕を振って歩く
+      const swing = speed > 0 ? Math.sin(p.phase) * 0.5 : 0;
+      p.legs[0].rotation.x = swing;
+      p.legs[1].rotation.x = -swing;
+      p.arms[0].rotation.x = -swing * 0.7;
+      p.arms[1].rotation.x = swing * 0.7;
+    }
 
     if (p.dog) {
       // 犬は飼い主の少し前を、左右にうろうろしながら歩く
@@ -281,9 +302,15 @@ export class Walkers {
     }
   }
 
-  private updateCat(c: Cat, dt: number, kid: THREE.Vector3) {
+  private updateCat(c: Cat, dt: number, kid: THREE.Vector3, stone: THREE.Vector3, stoneMoving: boolean) {
     const L = this.level;
     const [kx, kz] = [kid.x, kid.z];
+    // 転がってくる石に驚いて、反対側へ飛び出す（道を横切るので危ない）
+    if (stoneMoving && Math.hypot(stone.x - c.x, stone.z - c.z) < 3 && Math.abs(c.lTarget - c.l) < 0.02 && !c.startled) {
+      c.startled = true;
+      c.lTarget = c.l > 0 ? -LATERAL : LATERAL;
+    }
+    if (!stoneMoving) c.startled = false;
     // 子どもが近づくと、道の端へ逃げる
     if (Math.hypot(kx - c.x, kz - c.z) < 1.6 && Math.abs(c.lTarget) < LATERAL) {
       c.lTarget = c.l >= 0 ? LATERAL + 0.3 : -LATERAL - 0.3;
@@ -310,7 +337,15 @@ export class Walkers {
 
 // ---------- 見た目 ----------
 
-function buildPerson(rand: () => number): { mesh: THREE.Group; legs: THREE.Object3D[] } {
+interface PersonModel {
+  mesh: THREE.Group;
+  legs: THREE.Object3D[];
+  arms: THREE.Object3D[];
+  wheels: THREE.Object3D[];
+}
+
+/** 歩く人か、自転車に乗った人 */
+function buildPerson(rand: () => number, bike: boolean): PersonModel {
   const pick = <T,>(a: T[]) => a[Math.floor(rand() * a.length)];
   const g = new THREE.Group();
   const coat = lambert(pick([0x6b7a8f, 0x8a6f5a, 0xb8a58a, 0x55705e, 0x9a5a5a, 0xd9d4c8]));
@@ -318,10 +353,12 @@ function buildPerson(rand: () => number): { mesh: THREE.Group; legs: THREE.Objec
   const skin = lambert(pick([0xf1c9a5, 0xe0b18c, 0xd29b74]));
   const hair = lambert(pick([0x2b211b, 0x6b6560, 0xbdb8b0, 0x3a2a1e]));
   const scale = 1.35 + rand() * 0.15;
+  // 自転車では腰の位置がサドルの高さになる
+  const lift = bike ? 0.18 : 0;
   const legs: THREE.Object3D[] = [];
   for (const x of [0.1, -0.1]) {
     const hip = new THREE.Group();
-    hip.position.set(x, 0.75, 0);
+    hip.position.set(x, 0.75 + lift, 0);
     const leg = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.72, 0.14), pants);
     leg.position.y = -0.37;
     leg.castShadow = true;
@@ -330,24 +367,67 @@ function buildPerson(rand: () => number): { mesh: THREE.Group; legs: THREE.Objec
     legs.push(hip);
   }
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.62, 0.24), coat);
-  body.position.y = 1.06;
+  body.position.y = 1.06 + lift;
   body.castShadow = true;
   g.add(body);
+  // 腕（肩を軸に振る）。手の先まで
+  const arms: THREE.Object3D[] = [];
+  for (const x of [0.26, -0.26]) {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(x, 1.32 + lift, 0);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.56, 0.11), coat);
+    arm.position.y = -0.28;
+    arm.castShadow = true;
+    shoulder.add(arm);
+    const hand = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.09), skin);
+    hand.position.y = -0.6;
+    shoulder.add(hand);
+    g.add(shoulder);
+    arms.push(shoulder);
+  }
   const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.15, 1), skin);
-  head.position.y = 1.52;
+  head.position.y = 1.52 + lift;
   head.castShadow = true;
   g.add(head);
   const cap = new THREE.Mesh(new THREE.SphereGeometry(0.155, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.5), hair);
-  cap.position.y = 1.54;
+  cap.position.y = 1.54 + lift;
   g.add(cap);
-  // 買い物袋を持っていることも
-  if (rand() < 0.4) {
+
+  const wheels: THREE.Object3D[] = [];
+  if (bike) {
+    // 自転車：前後の車輪、フレーム、ハンドル。腕はハンドルへ伸ばす
+    const frame = lambert(pick([0x3f6e8a, 0xc0503a, 0xf4f1ea, 0x55705e]));
+    const tire = lambert(0x222222);
+    const wheelGeo = new THREE.TorusGeometry(0.33, 0.04, 5, 14);
+    wheelGeo.rotateY(Math.PI / 2);
+    for (const z of [0.55, -0.55]) {
+      const w = new THREE.Mesh(wheelGeo, tire);
+      w.position.set(0, 0.35, z);
+      g.add(w);
+      wheels.push(w);
+    }
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 1.0), frame);
+    bar.position.set(0, 0.62, 0.05);
+    g.add(bar);
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.45, 0.05), frame);
+    post.position.set(0, 0.62, 0.5);
+    g.add(post);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.04), lambert(0x888888));
+    handle.position.set(0, 0.88, 0.5);
+    g.add(handle);
+    const basket = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.2, 0.25), lambert(0x9a9a9a));
+    basket.position.set(0, 0.85, 0.72);
+    g.add(basket);
+    for (const a of arms) a.rotation.x = -1.0;
+    body.rotation.x = 0.2;
+  } else if (rand() < 0.4) {
+    // 買い物袋をさげていることも（手に持つ）
     const bag = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.3, 0.28), lambert(0xf4efe4));
-    bag.position.set(-0.26, 0.7, 0);
-    g.add(bag);
+    bag.position.set(0, -0.78, 0);
+    arms[1].add(bag);
   }
   g.scale.setScalar(scale / 1.4);
-  return { mesh: g, legs };
+  return { mesh: g, legs, arms, wheels };
 }
 
 function buildDog(rand: () => number): { mesh: THREE.Group; legs: THREE.Object3D[] } {

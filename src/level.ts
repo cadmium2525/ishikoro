@@ -281,7 +281,7 @@ export class Level {
   constructor(readonly seed: number) {
     const rand = createRng(seed);
     const r = rand();
-    this.difficulty = r < 0.3 ? 'easy' : r < 0.75 ? 'normal' : 'hard';
+    this.difficulty = r < 0.2 ? 'easy' : r < 0.62 ? 'normal' : 'hard';
     this.generate(rand);
     for (let i = 0; i < this.route.length - 1; i++) {
       const l = Math.hypot(this.route[i + 1][0] - this.route[i][0], this.route[i + 1][1] - this.route[i][1]);
@@ -749,7 +749,7 @@ export class Level {
   /** 帰り道ぞいの細かいもの：車庫の切り下げ・集水ます・電柱・自転車・坂 */
   private buildRouteDetails(rand: () => number, edges: RouteEdge[]) {
     const d = this.difficulty;
-    const spacing = { easy: 24, normal: 15, hard: 10 }[d];
+    const spacing = { easy: 20, normal: 12, hard: 8 }[d];
     const slopeP = { easy: 0.25, normal: 0.4, hard: 0.5 }[d];
     for (let k = 0; k < edges.length; k++) {
       const e = edges[k];
@@ -831,7 +831,7 @@ export class Level {
   /** 路地の側溝（区間ごとに片側だけ）と路地の電柱 */
   private buildLaneGutters(rand: () => number, edges: RouteEdge[]) {
     const d = this.difficulty;
-    const lidRatio = { easy: 0.65, normal: 0.45, hard: 0.25 }[d];
+    const lidRatio = { easy: 0.55, normal: 0.35, hard: 0.2 }[d];
     const onRoute = new Set(edges.filter((e) => e.street.kind === 'lane').map((e) => `${e.street.axis}${e.street.index}:${Math.min(e.from.index, e.to.index)}`));
     // 工事中のマンホールの数（帰り道の広い路地に）
     let works = { easy: rand() < 0.5 ? 1 : 0, normal: 1 + (rand() < 0.5 ? 1 : 0), hard: 2 + (rand() < 0.5 ? 1 : 0) }[d];
