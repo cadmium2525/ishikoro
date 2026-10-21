@@ -191,6 +191,16 @@ export class Stone {
       v.x += rx * lateral * dt;
       v.z += rz * lateral * dt;
 
+      // 坂：下り向きに転がり落ちようとする（転がる物体なので重力の約 5/7）
+      if (grounded && this.level.slopes.length) {
+        const e = 0.05;
+        const L = this.level;
+        const gx = (L.terrainAt(p.x + e, p.z) - L.terrainAt(p.x - e, p.z)) / (2 * e);
+        const gz = (L.terrainAt(p.x, p.z + e) - L.terrainAt(p.x, p.z - e)) / (2 * e);
+        v.x -= G * 0.71 * gx * dt;
+        v.z -= G * 0.71 * gz * dt;
+      }
+
       if (grounded) {
         const rollDecel = (4.0 - 2.0 * t.roundness) * (1 + 0.04 * speed);
         speed = Math.hypot(v.x, v.z);
@@ -203,6 +213,11 @@ export class Stone {
       p.x += v.x * dt;
       p.z += v.z * dt;
       this.roll(speed * dt);
+      // 下り坂では路面に沿って転がる（縁石のような段差は落ちる）
+      if (grounded) {
+        const nf = this.floor;
+        if (p.y > nf && p.y - nf < 0.05) p.y = nf;
+      }
     }
 
     this.spin *= Math.exp(-(grounded ? 0.9 : 0.2) * dt);

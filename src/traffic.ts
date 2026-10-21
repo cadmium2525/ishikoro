@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RA_X1, SW_X0, type CarLaneDef, type CarRoad, type Intersection, type Level, type Rect, type SignalGroup } from './level';
+import type { CarLaneDef, CarRoad, Intersection, Level, Rect, SignalGroup } from './level';
 
 const CAR_LEN = 3.8;
 const CAR_HALF_W = 0.85;
@@ -46,9 +46,12 @@ export class Signal {
     return 'red';
   }
 
-  /** 大通りを渡る横断歩道 */
-  get ped(): PedLight {
-    const t = this.t - Signal.A_START;
+  /**
+   * 歩行者用。roadAxis の向きに走る車道を渡る横断歩道の信号。
+   * 渡る人は交わる側の車と同じ向きに進むので、そちらの車が青のときに青になる。
+   */
+  ped(roadAxis: 'x' | 'z'): PedLight {
+    const t = this.t - (roadAxis === 'x' ? Signal.A_START : 0);
     if (t >= 0 && t < Signal.PED_GREEN) return 'green';
     if (t >= Signal.PED_GREEN && t < Signal.PED_GREEN + Signal.PED_BLINK) return 'blink';
     return 'red';
@@ -95,7 +98,7 @@ interface Warning {
 
 interface SignalLights {
   car: { signal: number; group: SignalGroup; mats: Record<CarLight, THREE.MeshBasicMaterial> }[];
-  ped: { signal: number; red: THREE.MeshBasicMaterial; green: THREE.MeshBasicMaterial }[];
+  ped: { signal: number; axis: 'x' | 'z'; red: THREE.MeshBasicMaterial; green: THREE.MeshBasicMaterial }[];
 }
 
 /** 車の出現・走行・信号停止と、石や子どもとの関わりを扱う */
@@ -237,7 +240,8 @@ export class Traffic {
    * 子どもがこの車道へ降りてよいか。(tx, tz) は行き先で、その近くの車線だけを見る。
    */
   mayCross(road: CarRoad, x: number, z: number, tx: number, tz: number): boolean {
-    if (road.crossing === 'signal') return this.signals[road.signal ?? 0].ped === 'green';
+    const signal = this.level.signalFor(road, x, z);
+    if (signal >= 0) return this.signals[signal].ped(road.axis) === 'green';
     return !this.cars.some((c) => {
       if (!road.lanes.includes(c.lane)) return false;
       if (Math.abs(across(c.lane, tx, tz) - c.lane.c) > 2.2) return false;
@@ -290,7 +294,7 @@ export class Traffic {
     }
     for (const head of this.lights.ped) {
       const signal = this.signals[head.signal];
-      const ped = signal.ped;
+      const ped = signal.ped(head.axis);
       const blinkOn = ped === 'green' || (ped === 'blink' && Math.floor(signal.t * 3) % 2 === 0);
       head.green.color.setHex(blinkOn ? LIT.green : DIM);
       head.red.color.setHex(ped === 'red' ? LIT.red : DIM);
@@ -388,8 +392,8 @@ function buildSignals(group: THREE.Group, x: Intersection, index: number, lights
     lights.car.push({ signal: index, group: signal, mats });
   };
 
-  const pedHead = (x: number, z: number, facing: number) => {
-    pole(x, z, 3);
+  const pedHead = (axis: 'x' | 'z', px: number, pz: number, facing: number) => {
+    pole(px, pz, 3);
     const head = new THREE.Group();
     const box = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.7, 0.2), housingMat);
     box.castShadow = true;
@@ -402,21 +406,27 @@ function buildSignals(group: THREE.Group, x: Intersection, index: number, lights
     const gm = new THREE.Mesh(panel, green);
     gm.position.set(0, -0.16, 0.101);
     head.add(r, gm);
-    head.position.set(x, 2.6, z);
+    head.position.set(px, 2.7, pz);
     head.rotation.y = facing;
     group.add(head);
-    lights.ped.push({ signal: index, red, green });
+    lights.ped.push({ signal: index, axis, red, green });
   };
 
-  const z0 = x.rz0;
-  const z1 = x.rz1;
-  // 大通り：東行き（手前の車線）と西行き
-  carHead('B', SW_X0 - 0.8, z0 + 2, -Math.PI / 2, SW_X0 - 0.8, z0 - 1);
-  carHead('B', RA_X1 + 0.8, z1 - 2, Math.PI / 2, RA_X1 + 0.8, z1 + 1);
-  // 道A：北行きと南行き
-  carHead('A', 4.3, z0 - 0.6, Math.PI, RA_X1 + 1, z0 - 0.6);
-  carHead('A', 1.3, z1 + 0.6, 0, RA_X1 + 1, z1 + 0.6);
-  // 歩行者用：渡る先（奥）に、こちら向き。帰りに見る手前側も
-  pedHead(SW_X0 + 0.3, z1 + 0.5, Math.PI);
-  pedHead(SW_X0 + 0.3, z0 - 0.5, 0);
+  const { x: cx, z: cz, vHalf, hHalf, vOuter, hOuter } = x;
+  // 車用：交差点の手前の角から、車線の上へ腕を伸ばす（左側通行）
+  carHead('B', cx - vOuter - 0.4, cz - hHalf / 2, -Math.PI / 2, cx - vOuter - 0.4, cz - hHalf - 1.0);
+  carHead('B', cx + vOuter + 0.4, cz + hHalf / 2, Math.PI / 2, cx + vOuter + 0.4, cz + hHalf + 1.0);
+  carHead('A', cx + vHalf / 2, cz - hOuter - 0.4, Math.PI, cx + vHalf + 1.0, cz - hOuter - 0.4);
+  carHead('A', cx - vHalf / 2, cz + hOuter + 0.4, 0, cx - vHalf - 1.0, cz + hOuter + 0.4);
+  // 歩行者用：4つの横断歩道の両端に、渡ってくる人の方を向けて
+  for (const side of [-1, 1]) {
+    // 南北の車道を渡る横断歩道（z = cz ± …）
+    const zc = cz + side * (hHalf + 1.25);
+    pedHead('z', cx - vHalf - 0.5, zc + side * 1.6, Math.PI / 2);
+    pedHead('z', cx + vHalf + 0.5, zc + side * 1.6, -Math.PI / 2);
+    // 東西の車道を渡る横断歩道（x = cx ± …）
+    const xc = cx + side * (vHalf + 1.25);
+    pedHead('x', xc + side * 1.6, cz - hHalf - 0.5, 0);
+    pedHead('x', xc + side * 1.6, cz + hHalf + 0.5, Math.PI);
+  }
 }

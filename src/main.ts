@@ -121,6 +121,7 @@ const camFocus = new THREE.Vector3();
 let camYaw = 0;
 let camDist = 6;
 let camHeight = 5;
+let camLookY = 0.3;
 /**
  * 車道側の斜め後ろからの視点。歩道の先と、迫ってくる車を同時に見せる。
  * 主人公は左足で蹴るので、カメラ側に体がかぶらない。
@@ -273,7 +274,7 @@ function kidGo(target: THREE.Vector3, speed: number, dt: number): 'moving' | 'ar
     const nz = p.z + (dz / d) * probe;
     const next = level.carRoadAt(nx, nz);
     if (next && next !== level.carRoadAt(p.x, p.z) && !traffic.mayCross(next, nx, nz, target.x, target.z)) {
-      waitingFor = next.crossing === 'signal' ? 'signal' : 'car';
+      waitingFor = level.signalFor(next, nx, nz) >= 0 ? 'signal' : 'car';
       kid.turnTo(Math.atan2(dx, dz), dt, 6);
       return 'waiting';
     }
@@ -422,9 +423,10 @@ function fixedUpdate(dt: number) {
     }
     case 'arrived': {
       // 家の前の石まで歩いて行き、足元を見下ろす
-      const target = tmpTarget.set(stone.position.x, 0, stone.position.z - 0.45);
+      const h = level.home;
+      const target = tmpTarget.set(stone.position.x - h.nx * 0.45, 0, stone.position.z - h.nz * 0.45);
       const there = kidGo(target, 1.6, dt) === 'arrived';
-      if (there) kid.turnTo(0, dt, 5);
+      if (there) kid.turnTo(Math.atan2(h.nx, h.nz), dt, 5);
       if (stateTime > 2.4) showClear();
       break;
     }
@@ -481,7 +483,12 @@ function recordsLine() {
 
 /** その日の道のようす（タイトルに出す） */
 function dayLine() {
-  return `<div class="day">きょうの みち：${level.difficultyLabel}・やく ${Math.round(level.routeLength)} m・${daySky}</div>`;
+  const turns = level.turns === 0 ? 'まっすぐ' : `${level.turns}回まがる`;
+  const extra = [turns, level.crossings ? `横断歩道 ${level.crossings}` : '', level.slopes.length ? '坂あり' : ''].filter(Boolean).join('・');
+  return (
+    `<div class="day">きょうの みち：${level.difficultyLabel}・やく ${Math.round(level.routeLength)} m・${daySky}<br>` +
+    `<span class="small">${extra}</span></div>`
+  );
 }
 
 function showOverlay(title: string, body: string, action: string) {
@@ -528,11 +535,12 @@ function updateCamera(dt: number) {
     yaw = camYaw;
   } else if (state === 'arrived' || state === 'clear') {
     // 家を背景に、足元の石を見下ろす
-    focus = tmpFocus.set(stone.position.x, 0, stone.position.z + 0.3);
+    const h = level.home;
+    focus = tmpFocus.set(stone.position.x + h.nx * 0.3, 0, stone.position.z + h.nz * 0.3);
     dist = 3.4;
     height = 2.6;
     rate = 1.5;
-    yaw = 0.5;
+    yaw = Math.atan2(h.nx, h.nz) + 0.5;
   } else if (waitingFor) {
     // 車道の手前で待っている間は、子どもと石と信号・車を一緒に見せる
     focus = tmpFocus.set((stone.position.x + kid.position.x) / 2, 0, (stone.position.z + kid.position.z) / 2 + 1);
@@ -555,7 +563,11 @@ function updateCamera(dt: number) {
   camHeight += (height * zoom - camHeight) * k;
 
   camera.position.set(camFocus.x - Math.sin(camYaw) * camDist, camHeight, camFocus.z - Math.cos(camYaw) * camDist);
-  camera.lookAt(camFocus.x, 0.3, camFocus.z);
+  // 坂の上では見る高さも上げる
+  const lookY = 0.3 + level.terrainAt(camFocus.x, camFocus.z);
+  camLookY += (lookY - camLookY) * damp(3, dt);
+  camera.position.y += camLookY - 0.3;
+  camera.lookAt(camFocus.x, camLookY, camFocus.z);
 
   sun.position.copy(camFocus).add(sunOffset);
   sun.target.position.copy(camFocus);
