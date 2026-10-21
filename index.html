@@ -185,7 +185,15 @@
       #overlay h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: 0.1em; }
       #overlay .small { font-size: 13px; opacity: 0.75; }
       #overlay .action { margin-top: 6px; font-size: 14px; color: #a0602c; }
-      #overlay.title { align-items: center; background: rgba(255, 240, 215, 0.35); }
+      #overlay.title { background: linear-gradient(to top, rgba(255, 240, 215, 0.55), transparent 50%); }
+      @media (orientation: landscape) {
+        #overlay.title {
+          align-items: center;
+          justify-content: flex-end;
+          padding-right: max(5vw, env(safe-area-inset-right));
+          background: linear-gradient(to left, rgba(255, 240, 215, 0.55), transparent 50%);
+        }
+      }
       #overlay .day { font-size: 13px; margin: 2px 0 4px; }
       #overlay button, #collection button {
         font: inherit;

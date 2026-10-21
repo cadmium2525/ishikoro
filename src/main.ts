@@ -617,12 +617,12 @@ function updateCamera(dt: number) {
   let yaw = aimCenter() + CAM_SIDE_ANGLE;
 
   if (state === 'title') {
-    // 学校の前から通学路を見渡す
-    focus = tmpFocus.set(1.5, 0, 12);
-    dist = 12;
-    height = 7;
-    rate = 1;
-    yaw = 0.5 + Math.sin(performance.now() / 4000) * 0.15;
+    // 今日の石のアップ。正面の低い位置から、奥に主人公の足元が見える向きで、ゆっくり揺れる
+    focus = tmpFocus.copy(stone.position);
+    dist = 0.75;
+    height = 0.42;
+    rate = 6;
+    yaw = aimCenter() + Math.PI + Math.sin(performance.now() / 3500) * 0.35;
   } else if (state === 'rolling') {
     // 転がる石を追う。速いほど引いて先を見せる
     const v = stone.velocity;
@@ -673,13 +673,18 @@ function updateCamera(dt: number) {
   camHeight += (height * zoom - camHeight) * k;
 
   // 坂の上では見る高さも上げる
-  const lookY = 0.3 + level.terrainAt(camFocus.x, camFocus.z);
+  // タイトルでは石そのものを見る
+  const lookY = state === 'title' ? stone.position.y : 0.3 + level.terrainAt(camFocus.x, camFocus.z);
   camLookY += (lookY - camLookY) * damp(3, dt);
 
   // 建物や木が子どもと石をさえぎるなら、真上から見る向きへ持ち上げる
   const occ = (worldGroup?.userData.occluders ?? []) as Occluder[];
   let need = 1;
   for (let k = 0; k <= 6; k++) {
+    if (state === 'title') {
+      need = 0;
+      break;
+    }
     placeCamera(k / 6, tmpCam);
     const blocked = occ.some(
       (o) =>
@@ -694,7 +699,13 @@ function updateCamera(dt: number) {
   }
   camLift += (need - camLift) * damp(need > camLift ? 6 : 1.2, dt);
   placeCamera(camLift, camera.position);
-  camera.lookAt(camFocus.x, camLookY, camFocus.z);
+  if (state === 'title') {
+    // 縦長では石を画面の上寄りに、横長では左寄りに置き、案内の枠と重ならないようにする
+    const side = camera.aspect >= 1 ? 0.32 : 0;
+    camera.lookAt(camFocus.x - Math.cos(camYaw) * side, camLookY - (camera.aspect < 1 ? 0.12 : 0.04), camFocus.z + Math.sin(camYaw) * side);
+  } else {
+    camera.lookAt(camFocus.x, camLookY, camFocus.z);
+  }
 
   sun.position.copy(camFocus).add(sunOffset);
   sun.target.position.copy(camFocus);
