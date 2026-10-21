@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { buildWorld, disposeWorld } from './world';
+import { buildWorld, disposeWorld, type Occluder } from './world';
 import { Level } from './level';
 import { Stone, stoneName } from './stone';
 import { addToCollection, showCollection } from './collection';
@@ -578,17 +578,69 @@ function updateCamera(dt: number) {
   camDist += (dist * zoom - camDist) * k;
   camHeight += (height * zoom - camHeight) * k;
 
-  camera.position.set(camFocus.x - Math.sin(camYaw) * camDist, camHeight, camFocus.z - Math.cos(camYaw) * camDist);
   // 坂の上では見る高さも上げる
   const lookY = 0.3 + level.terrainAt(camFocus.x, camFocus.z);
   camLookY += (lookY - camLookY) * damp(3, dt);
-  camera.position.y += camLookY - 0.3;
+
+  // 建物や木が子どもと石をさえぎるなら、真上から見る向きへ持ち上げる
+  const occ = (worldGroup?.userData.occluders ?? []) as Occluder[];
+  let need = 1;
+  for (let k = 0; k <= 6; k++) {
+    placeCamera(k / 6, tmpCam);
+    const blocked = occ.some(
+      (o) =>
+        Math.abs((o.x0 + o.x1) / 2 - camFocus.x) < 30 &&
+        Math.abs((o.z0 + o.z1) / 2 - camFocus.z) < 30 &&
+        (segmentHitsBox(tmpCam, stone.position, o) || segmentHitsBox(tmpCam, tmpHead.copy(kid.position).setY(kid.position.y + 1.1), o)),
+    );
+    if (!blocked) {
+      need = k / 6;
+      break;
+    }
+  }
+  camLift += (need - camLift) * damp(need > camLift ? 6 : 1.2, dt);
+  placeCamera(camLift, camera.position);
   camera.lookAt(camFocus.x, camLookY, camFocus.z);
 
   sun.position.copy(camFocus).add(sunOffset);
   sun.target.position.copy(camFocus);
 }
 const tmpFocus = new THREE.Vector3();
+const tmpCam = new THREE.Vector3();
+const tmpHead = new THREE.Vector3();
+/** 視線がさえぎられたときの持ち上げ具合（0：ふだん、1：ほぼ真上） */
+let camLift = 0;
+
+/** lift だけ真上寄りにしたカメラ位置 */
+function placeCamera(lift: number, out: THREE.Vector3) {
+  const dist = camDist * (1 - 0.8 * lift);
+  const height = camHeight * (1 + 0.25 * lift);
+  return out.set(camFocus.x - Math.sin(camYaw) * dist, height + camLookY - 0.3, camFocus.z - Math.cos(camYaw) * dist);
+}
+
+/** 線分 a→b が箱（上から見た範囲・地面から top まで）を通るか */
+function segmentHitsBox(a: THREE.Vector3, b: THREE.Vector3, o: Occluder): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const axes: [number, number, number, number][] = [
+    [a.x, b.x - a.x, o.x0, o.x1],
+    [a.y, b.y - a.y, 0, o.top],
+    [a.z, b.z - a.z, o.z0, o.z1],
+  ];
+  for (const [p, d, lo, hi] of axes) {
+    if (Math.abs(d) < 1e-9) {
+      if (p < lo || p > hi) return false;
+      continue;
+    }
+    let u0 = (lo - p) / d;
+    let u1 = (hi - p) / d;
+    if (u0 > u1) [u0, u1] = [u1, u0];
+    t0 = Math.max(t0, u0);
+    t1 = Math.min(t1, u1);
+    if (t0 > t1) return false;
+  }
+  return true;
+}
 
 function updateHud() {
   const s = level.routeProgress(stone.position.x, stone.position.z);

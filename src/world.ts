@@ -39,6 +39,19 @@ class Batcher {
   }
 }
 
+/** カメラの視線をさえぎりうる建物や木（上から見た範囲と高さ） */
+export interface Occluder {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+  top: number;
+}
+
+let occluders: Occluder[] = [];
+const occlude = (cx: number, cz: number, hx: number, hz: number, top: number) =>
+  occluders.push({ x0: cx - hx, x1: cx + hx, z0: cz - hz, z1: cz + hz, top });
+
 /** 家を並べるのは帰り道からこの距離まで（遠くは霧で見えない） */
 const HOUSE_RANGE = 48;
 
@@ -47,6 +60,7 @@ export function buildWorld(level: Level): THREE.Group {
   const group = new THREE.Group();
   const b = new Batcher();
   const B = level.bounds;
+  occluders = [];
 
   // 地面（塀の外側の土・庭）
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(B.x1 - B.x0 + 60, B.z1 - B.z0 + 60), lambert(0xa9b77a));
@@ -97,6 +111,7 @@ export function buildWorld(level: Level): THREE.Group {
   buildPoles(b, level);
 
   b.build(group);
+  group.userData.occluders = occluders;
   return group;
 }
 
@@ -274,6 +289,7 @@ function buildDecor(b: Batcher, level: Level, d: Decor, rand: () => number) {
       const cz = (r.z0 + r.z1) / 2;
       const alongZ = r.z1 - r.z0 > r.x1 - r.x0;
       b.box(alongZ ? 7 : 20, 7, alongZ ? 20 : 7, 0xe6e0d2, cx, 3.5, cz);
+      occlude(cx, cz, alongZ ? 3.5 : 10, alongZ ? 10 : 3.5, 7);
       // 時計は学校を出る道の側に
       const dx = level.start.x - cx;
       const dz = level.start.z - cz;
@@ -305,6 +321,7 @@ function buildDecor(b: Batcher, level: Level, d: Decor, rand: () => number) {
         const at = (off: number): [number, number] => (ux ? [am, faceC - nz * off] : [faceC - nx * off, am]);
         const [bx, bz] = at(3.1);
         b.box(6, h, wdt - 0.15, colors[Math.floor(rand() * colors.length)], bx, h / 2, bz, rot);
+        occlude(bx, bz, ux ? wdt / 2 : 3, ux ? 3 : wdt / 2, h);
         // ガラスの店先、通りへ下がる日よけ、看板
         const [gx, gz] = at(0.08);
         b.box(0.05, 1.8, wdt - 1.0, 0x8fa4ad, gx, 1.15, gz, rot, false);
@@ -451,6 +468,7 @@ function buildHouses(b: Batcher, level: Level, rand: () => number) {
         placed.push(r);
         const rot = Math.atan2(ux, uz);
         b.box(depth, h, width, houseColors[Math.floor(rand() * houseColors.length)], cx, h / 2, cz, rot);
+        occlude(cx, cz, hx, hz, h + 1.6);
         const roof = new THREE.ConeGeometry(Math.max(width, depth) * 0.78, 1.6, 4);
         roof.rotateY(Math.PI / 4);
         roof.scale(depth / Math.max(width, depth), 1, width / Math.max(width, depth));
@@ -471,6 +489,7 @@ function addTree(b: Batcher, rand: () => number, x: number, z: number) {
   b.add(new THREE.CylinderGeometry(0.08, 0.12, 1.4, 6), 0x7a5b3e, new THREE.Matrix4().setPosition(x, 0.7, z));
   const s = 0.9 + rand() * 0.6;
   b.add(new THREE.IcosahedronGeometry(s, 0), rand() < 0.5 ? 0x6f8f4e : 0x7f9d55, new THREE.Matrix4().setPosition(x, 1.4 + s * 0.7, z));
+  occlude(x, z, s * 0.8, s * 0.8, 1.4 + s * 1.6);
 }
 
 /** 主人公の家。色や形は家ごとに変わる。門から玄関までが通りから家の方（n）へ伸びる */
@@ -487,6 +506,7 @@ function buildHome(b: Batcher, level: Level) {
   const wdt = 6 + rand() * 1.2;
   const [hx, hz] = at(0, 5.2);
   b.box(wdt, h, 6, walls[Math.floor(rand() * walls.length)], hx, h / 2, hz, rot);
+  occlude(hx, hz, nx !== 0 ? 3 : wdt / 2, nx !== 0 ? wdt / 2 : 3, h + 1.8);
   const roof = new THREE.ConeGeometry(wdt * 0.75, 1.8, 4);
   roof.rotateY(Math.PI / 4);
   b.add(roof, roofs[Math.floor(rand() * roofs.length)], new THREE.Matrix4().makeRotationY(rot).setPosition(hx, h + 0.9, hz));
