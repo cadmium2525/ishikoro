@@ -38,6 +38,8 @@ interface Person {
   bike: boolean;
   /** 自転車のベルをもう鳴らしたか */
   rang: boolean;
+  /** 石を当てられて怒っている時間（-1：怒っていない） */
+  angry: number;
   radius: number;
   dog: Dog | null;
 }
@@ -59,6 +61,8 @@ interface Cat {
   timer: number;
   /** 転がる石に一度驚いたら、石が止まるまでは驚かない */
   startled: boolean;
+  /** 石を当てられて怒っている時間（-1：怒っていない） */
+  angry: number;
   mesh: THREE.Group;
   x: number;
   z: number;
@@ -90,7 +94,7 @@ export class Walkers {
       let s = 20 + this.rand() * Math.max(10, level.routeLength - 35);
       for (let k = 0; k < 10 && level.carRoadAt(...this.pointAt(s, 0)); k++) s = 20 + this.rand() * Math.max(10, level.routeLength - 35);
       const l = (this.rand() < 0.5 ? -1 : 1) * LATERAL;
-      const cat: Cat = { s, l, lTarget: l, timer: 3 + this.rand() * 6, startled: false, mesh: buildCat(this.rand), x: 0, z: 0 };
+      const cat: Cat = { s, l, lTarget: l, timer: 3 + this.rand() * 6, startled: false, angry: -1, mesh: buildCat(this.rand), x: 0, z: 0 };
       this.cats.push(cat);
       this.group.add(cat.mesh);
     }
@@ -132,14 +136,39 @@ export class Walkers {
     return out;
   }
 
-  /** 動いている石が誰かに当たったか */
-  hitTest(x: number, z: number, y: number, radius: number): WalkerKind | null {
+  /** 動いている石が誰かに当たったか。当たった相手は怒りだす */
+  strike(x: number, z: number, y: number, radius: number): WalkerKind | null {
     if (y - radius > 1.2) return null;
-    for (const b of this.bodies()) {
-      if (Math.hypot(b.x - x, b.z - z) < b.radius + radius) return b.kind;
+    for (const p of this.people) {
+      const hitPerson = Math.hypot(p.mesh.position.x - x, p.mesh.position.z - z) < p.radius + radius;
+      const hitDog = !!p.dog && Math.hypot(p.dog.x - x, p.dog.z - z) < 0.26 + radius;
+      if (!hitPerson && !hitDog) continue;
+      p.angry = 0;
+      this.scolder = { person: p, cat: null, text: hitDog ? pick(DOG_LINES) : p.bike ? pick(BIKE_LINES) : pick(PERSON_LINES) };
+      return hitDog ? 'dog' : p.bike ? 'bike' : 'person';
+    }
+    for (const c of this.cats) {
+      if (Math.hypot(c.x - x, c.z - z) >= 0.18 + radius) continue;
+      c.angry = 0;
+      this.scolder = { person: null, cat: c, text: 'シャーッ！' };
+      return 'cat';
     }
     return null;
   }
+
+  /** 怒っている相手の頭の上の位置と、言っていること（吹き出し用） */
+  get speech(): { x: number; y: number; z: number; text: string } | null {
+    const s = this.scolder;
+    if (!s) return null;
+    if (s.person) {
+      const m = s.person.mesh;
+      return { x: m.position.x, y: m.position.y + 1.85 * m.scale.y + (s.person.bike ? 0.2 : 0), z: m.position.z, text: s.text };
+    }
+    const c = s.cat!;
+    return { x: c.x, y: c.mesh.position.y + 0.6, z: c.z, text: s.text };
+  }
+
+  private scolder: { person: Person | null; cat: Cat | null; text: string } | null = null;
 
   /** stoneMoving：転がっている石はよけない（気づかずに当たる） */
   update(dt: number, stone: THREE.Vector3, stoneMoving: boolean, kid: THREE.Vector3, traffic: Traffic) {
@@ -152,6 +181,12 @@ export class Walkers {
     if (!stoneMoving) obstacles.push({ s: stoneS, l: this.lateralOf(stone.x, stone.z, stoneS), r: 0.13 });
 
     for (const p of [...this.people]) {
+      // 石を当てられた人は立ち止まり、子どもの方を向いて怒る
+      if (p.angry >= 0) {
+        p.angry += dt;
+        this.scold(p, dt, kid);
+        continue;
+      }
       // 前方の石や子どもを横へよける。よけられなければ待つ
       let blocked = false;
       p.lTarget = p.lTarget * 0.98;
@@ -252,6 +287,7 @@ export class Walkers {
       ...buildPerson(this.rand, bike),
       bike,
       rang: false,
+      angry: -1,
       radius: bike ? 0.42 : 0.26,
       dog: null,
     };
@@ -313,9 +349,47 @@ export class Walkers {
     }
   }
 
+  /** 怒っている人：子どもの方を向き、腕を振り上げる。犬は吠えて跳ねる */
+  private scold(p: Person, dt: number, kid: THREE.Vector3) {
+    const m = p.mesh;
+    const face = Math.atan2(kid.x - m.position.x, kid.z - m.position.z);
+    let d = face - m.rotation.y;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    m.rotation.y += d * Math.min(1, dt * 8);
+    p.legs[0].rotation.x = 0;
+    p.legs[1].rotation.x = 0;
+    if (!p.bike) {
+      // 右腕を振り上げて、こらっ
+      p.arms[1].rotation.x = -2.5 + Math.sin(p.angry * 12) * 0.35;
+      p.arms[0].rotation.x = 0;
+    }
+    if (p.dog) {
+      const dog = p.dog.mesh;
+      const df = Math.atan2(kid.x - dog.position.x, kid.z - dog.position.z);
+      dog.rotation.y = df;
+      dog.position.y = this.level.groundAt(dog.position.x, dog.position.z) + Math.abs(Math.sin(p.angry * 11)) * 0.15;
+    }
+  }
+
   private updateCat(c: Cat, dt: number, kid: THREE.Vector3, stone: THREE.Vector3, stoneMoving: boolean) {
     const L = this.level;
     const [kx, kz] = [kid.x, kid.z];
+    // 石を当てられたねこは、背中を立ててシャーッと怒り、それから逃げていく
+    if (c.angry >= 0) {
+      c.angry += dt;
+      const arch = c.angry < 1.2 ? 1.3 : 1;
+      c.mesh.scale.set(1, c.mesh.scale.y + (arch - c.mesh.scale.y) * Math.min(1, dt * 10), 1);
+      c.mesh.rotation.y = Math.atan2(kx - c.x, kz - c.z);
+      if (c.angry > 1.2) {
+        c.lTarget = c.l >= 0 ? 2.5 : -2.5;
+        c.l += Math.sign(c.lTarget - c.l) * Math.min(Math.abs(c.lTarget - c.l), 2.5 * dt);
+        const [x, z] = this.pointAt(c.s, c.l);
+        c.x = x;
+        c.z = z;
+        c.mesh.position.set(x, L.groundAt(x, z), z);
+      }
+      return;
+    }
     // 転がってくる石に驚いて、反対側へ飛び出す（道を横切るので危ない）
     if (stoneMoving && Math.hypot(stone.x - c.x, stone.z - c.z) < 3 && Math.abs(c.lTarget - c.l) < 0.02 && !c.startled) {
       c.startled = true;
@@ -347,6 +421,11 @@ export class Walkers {
     tail.rotation.z = Math.sin(this.time * (moving ? 9 : 2)) * 0.4;
   }
 }
+
+const PERSON_LINES = ['こらっ！', 'あぶないでしょ！', 'いたっ！ 気をつけなさい！'];
+const BIKE_LINES = ['あぶないなぁ！', 'こらー！ 道で石を蹴らない！'];
+const DOG_LINES = ['うちの子に何するの！', 'ワンワン！ こらっ！'];
+const pick = (list: string[]) => list[Math.floor(Math.random() * list.length)];
 
 // ---------- 見た目 ----------
 

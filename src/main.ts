@@ -28,10 +28,10 @@ const LOST_TEXT: Record<LostReason, string> = {
   grate: '石が集水ますの格子にはまってしまった。',
   water: '石が田んぼに落ちてしまった。',
   manhole: '石が工事中のマンホールに落ちてしまった。',
-  person: '石が通りがかりの人に当たってしまった。',
-  dog: '石が散歩中の犬に当たってしまった。',
-  cat: '石がねこに当たってしまった。',
-  bike: '石が自転車に当たってしまった。',
+  person: '通りがかりの人に石を当てて、怒られてしまった。',
+  dog: '散歩中の犬に石を当てて、飼い主さんに怒られてしまった。',
+  cat: 'ねこに石を当てて、シャーッと怒られてしまった。',
+  bike: '自転車の人に石を当てて、怒られてしまった。',
   time: '5時のチャイムが鳴ってしまった。',
   car: '石が車にはじかれてしまった。',
 };
@@ -55,6 +55,7 @@ const el = {
   ovBody: document.querySelector<HTMLElement>('#ov-body')!,
   ovAction: document.querySelector<HTMLElement>('#ov-action')!,
   toast: document.querySelector<HTMLElement>('#toast')!,
+  bubble: document.querySelector<HTMLElement>('#bubble')!,
   ovStone: document.querySelector<HTMLImageElement>('#ov-stone')!,
   mute: document.querySelector<HTMLElement>('#mute')!,
   ovCollection: document.querySelector<HTMLElement>('#ov-collection')!,
@@ -411,13 +412,14 @@ function checkLost(): boolean {
   }
   // 通行人・犬・ねこに当たったら跳ね返って、その日はおしまい
   if (stone.moving && stone.horizontalSpeed > 0.25) {
-    const who = walkers.hitTest(p.x, p.z, p.y, stone.traits.radius);
+    const who = walkers.strike(p.x, p.z, p.y, stone.traits.radius);
     if (who) {
       stone.velocity.x *= -0.3;
       stone.velocity.z *= -0.3;
+      sfx.thud();
       if (who === 'dog') sfx.bark();
-      else if (who === 'cat') sfx.meow();
-      else sfx.thud();
+      else if (who === 'cat') sfx.hiss();
+      else sfx.scold();
       lose(who);
       return true;
     }
@@ -445,7 +447,6 @@ function lose(reason: LostReason) {
   // 立ち止まってうなだれる。まわりの音も少し遠のく
   kid.setMood('sad');
   sfx.setAmbienceLevel(0.35);
-  sfx.setRolling(0, false);
 }
 
 function fixedUpdate(dt: number) {
@@ -533,10 +534,12 @@ function fixedUpdate(dt: number) {
       break;
     }
     case 'lost': {
-      // その場で立ち止まり、石の行方を見る
+      // その場で立ち止まり、石の行方を見る。誰かに当てたときは、その人の方を向いて怒られる
       stone.step(dt);
-      kid.turnTo(Math.atan2(stone.position.x - kid.position.x, stone.position.z - kid.position.z), dt, 4);
-      if (stateTime > 2.6) showGameOver();
+      const sp = walkers.speech;
+      const lookAt = sp ?? stone.position;
+      kid.turnTo(Math.atan2(lookAt.x - kid.position.x, lookAt.z - kid.position.z), dt, 4);
+      if (stateTime > (sp ? 3.4 : 2.6)) showGameOver();
       break;
     }
   }
@@ -566,7 +569,7 @@ function showClear() {
     distance: Math.round(level.routeLength),
     difficulty: level.difficulty,
   });
-  showOverlay('ただいま', `「${name}」を ${kicks} 回で連れて帰った。`, 'タップで次の日へ');
+  showOverlay('ただいま', `「${name}」を ${kicks} 回で連れて帰った。`, '次の日へ');
   // 今日の石の肖像を結果に添える
   el.ovStone.src = stoneThumb(stoneSeed, level);
   el.ovStone.classList.add('on');
@@ -577,7 +580,7 @@ function showGameOver() {
   recordProgress();
   saveRecords();
   sfx.sad();
-  showOverlay('きょうは ここまで', `${LOST_TEXT[lostReason]}<br>${Math.round(bestProgress)} m 進んだ。`, 'タップで次の日へ');
+  showOverlay('きょうは ここまで', `${LOST_TEXT[lostReason]}<br>${Math.round(bestProgress)} m 進んだ。`, '次の日へ');
 }
 
 function recordsLine() {
@@ -636,9 +639,17 @@ function updateCamera(dt: number) {
     focus = tmpFocus.copy(stone.position);
     yaw = camYaw;
   } else if (state === 'lost' || state === 'over') {
-    focus = tmpFocus.set(stone.position.x, 0, stone.position.z);
-    dist = 6;
-    height = 5;
+    const sp = walkers.speech;
+    if (sp) {
+      // 怒っている人と子どもを一緒に映す
+      focus = tmpFocus.set((sp.x + kid.position.x) / 2, 0, (sp.z + kid.position.z) / 2);
+      dist = 5;
+      height = 4;
+    } else {
+      focus = tmpFocus.set(stone.position.x, 0, stone.position.z);
+      dist = 6;
+      height = 5;
+    }
     rate = 2;
     yaw = camYaw;
   } else if (state === 'arrived' || state === 'clear') {
@@ -747,11 +758,28 @@ function segmentHitsBox(a: THREE.Vector3, b: THREE.Vector3, o: Occluder): boolea
   return true;
 }
 
+/** 怒っている人の頭の上に吹き出しを出す */
+const tmpBubble = new THREE.Vector3();
+function updateBubble() {
+  const sp = state === 'lost' || state === 'over' ? walkers.speech : null;
+  if (!sp) {
+    el.bubble.classList.remove('on');
+    return;
+  }
+  tmpBubble.set(sp.x, sp.y, sp.z).project(camera);
+  const x = (tmpBubble.x * 0.5 + 0.5) * window.innerWidth;
+  const y = (-tmpBubble.y * 0.5 + 0.5) * window.innerHeight;
+  if (el.bubble.textContent !== sp.text) el.bubble.textContent = sp.text;
+  el.bubble.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
+  el.bubble.classList.add('on');
+}
+
 function updateHud() {
   const s = level.routeProgress(stone.position.x, stone.position.z);
   const home = state === 'arrived' || state === 'clear';
   el.dist.textContent = home ? '0' : String(Math.max(0, Math.round(level.routeLength - s)));
   el.kicks.textContent = String(kicks);
+  updateBubble();
   const t = Math.max(0, Math.ceil(timeLeft));
   const clock = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
   if (el.clock.textContent !== clock) el.clock.textContent = clock;
@@ -823,11 +851,8 @@ function frame(now: number) {
   }
   updateCamera(dt);
   updateHud();
-  // 音：環境音・石の転がる音・足音
+  // 音：環境音・足音
   sfx.tick(dt);
-  if (state !== 'lost' && state !== 'over') {
-    sfx.setRolling(stone.moving && stone.onGround ? stone.horizontalSpeed : 0, !!level.sidewalkAt(stone.position.x, stone.position.z));
-  }
   sfx.footsteps(kid.moveSpeed, dt);
   adaptQuality(dt);
   renderer.render(scene, camera);
@@ -838,7 +863,7 @@ function frame(now: number) {
 setupDay(newDaySeed());
 el.status.classList.add('off');
 el.hint.classList.add('off');
-showOverlay('いしころ', `今日の石を、家まで連れて帰ろう。${dayLine()}`, 'タップで はじめる');
+showOverlay('いしころ', `今日の石を、家まで連れて帰ろう。${dayLine()}`, 'はじめる');
 requestAnimationFrame(frame);
 
 // デバッグ用（コンソールから石の性格や状態を確認）

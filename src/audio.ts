@@ -15,8 +15,6 @@ export class Sfx {
   /** 環境音だけの音量（失敗したときに静かにする） */
   private ambBus: GainNode | null = null;
   private trafficGain: GainNode | null = null;
-  private rollGain: GainNode | null = null;
-  private rollFilter: BiquadFilterNode | null = null;
   private windGain: GainNode | null = null;
   private ambience: Ambience = 'noon';
   /** 次の鳥・蝉・カラスまでの時間 */
@@ -103,14 +101,6 @@ export class Sfx {
     this.trafficGain.gain.setTargetAtTime(level * level * 0.5, this.ctx.currentTime, 0.15);
   }
 
-  /** 石の転がる音。速さ [m/s] と、歩道（タイル）か車道（アスファルト）か */
-  setRolling(speed: number, onSidewalk: boolean) {
-    if (!this.ctx || !this.rollGain || !this.rollFilter) return;
-    const t = this.ctx.currentTime;
-    this.rollGain.gain.setTargetAtTime(Math.min(0.35, speed * 0.06), t, 0.05);
-    this.rollFilter.frequency.setTargetAtTime((onSidewalk ? 1500 : 800) + speed * 120, t, 0.05);
-  }
-
   /** 主人公の足音（速さ [m/s] に合わせて） */
   footsteps(speed: number, dt: number) {
     if (!this.ctx || speed < 0.4) return;
@@ -192,6 +182,50 @@ export class Sfx {
     osc.stop(t + 0.5);
   }
 
+  /** 怒った声の代わり（ムッとした低い2音） */
+  scold() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    [0, 0.18].forEach((d, i) => {
+      const t = ctx.currentTime + 0.15 + d;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(i ? 210 : 260, t);
+      osc.frequency.linearRampToValueAtTime(i ? 170 : 230, t + 0.14);
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = 900;
+      f.Q.value = 1.5;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.12, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      osc.connect(f).connect(g).connect(this.out);
+      osc.start(t);
+      osc.stop(t + 0.18);
+    });
+  }
+
+  /** ねこが怒る（シャーッ） */
+  hiss() {
+    const ctx = this.ctx;
+    if (!ctx || !this.noise) return;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = 'highpass';
+    f.frequency.value = 2800;
+    const g = ctx.createGain();
+    const t = ctx.currentTime + 0.1;
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.18, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
+    src.connect(f).connect(g).connect(this.out);
+    src.start(ctx.currentTime);
+    src.stop(t + 0.85);
+  }
+
   /** 犬（ワンワン） */
   bark() {
     for (let k = 0; k < 2; k++) setTimeout(() => this.click(520, 0.6, 0.12), k * 220);
@@ -220,7 +254,7 @@ export class Sfx {
     return this.master!;
   }
 
-  /** ずっと鳴っている音：車の走行音・石の転がる音・風 */
+  /** ずっと鳴っている音：車の走行音・風 */
   private startLoops() {
     const ctx = this.ctx!;
     // ブラウンノイズ（低い音が多いざわめき）をループで使い回す
@@ -246,13 +280,6 @@ export class Sfx {
     this.trafficGain = ctx.createGain();
     this.trafficGain.gain.value = 0;
     loop(brown).connect(tf).connect(this.trafficGain).connect(this.out);
-    // 石の転がる音（ザラザラ）
-    this.rollFilter = ctx.createBiquadFilter();
-    this.rollFilter.type = 'bandpass';
-    this.rollFilter.Q.value = 0.8;
-    this.rollGain = ctx.createGain();
-    this.rollGain.gain.value = 0;
-    loop(this.noise!).connect(this.rollFilter).connect(this.rollGain).connect(this.out);
     // 風：ゆっくり強弱をつける
     const wf = ctx.createBiquadFilter();
     wf.type = 'bandpass';
