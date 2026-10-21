@@ -33,63 +33,84 @@ export class Kid {
 
   constructor(seed: number) {
     const rand = createRng(seed);
-    const shirtColors = [0xf2f0e8, 0x9cc3d9, 0xf0c36b, 0xe39b8f, 0xa6c48a];
-    const randoseruColors = [0xb3362c, 0x2d3a55, 0x6b3f2a, 0xd77ca0, 0x3f6e5a];
-    const skin = lambert(0xf1c9a5);
-    const shirt = lambert(shirtColors[Math.floor(rand() * shirtColors.length)]);
-    const pants = lambert(0x3c4a63);
-    const shoes = lambert(0xf4f1ea);
-    const hair = lambert(0x2b211b);
-    const scale = 0.92 + rand() * 0.16;
+    const pick = <T,>(list: T[]) => list[Math.floor(rand() * list.length)];
+    const skin = lambert(pick([0xf1c9a5, 0xe8b890, 0xd9a37a, 0xf5d5b8]));
+    const shirt = lambert(pick([0xf2f0e8, 0x9cc3d9, 0xf0c36b, 0xe39b8f, 0xa6c48a, 0xd8c3e6, 0xf4a259, 0x7fb3a8]));
+    const pantsColor = pick([0x3c4a63, 0x5b4b3a, 0x2f3a2f, 0x6b6f78, 0x8a3b3b]);
+    const pants = lambert(pantsColor);
+    const shoes = lambert(pick([0xf4f1ea, 0x5a6fa8, 0xe07a5f, 0x4a4a4a]));
+    const socks = lambert(0xf8f6f0);
+    const hair = lambert(pick([0x2b211b, 0x3a2a1e, 0x5a3b25, 0x1f1a17]));
+    const bottoms = pick(['long', 'shorts', 'shorts', 'skirt'] as const);
+    const hairStyle = pick(['short', 'short', 'bob', 'pony', 'twin'] as const);
+    const hat = rand() < 0.45 ? pick(['yellow', 'redwhite'] as const) : null;
+    const scale = 0.88 + rand() * 0.22;
 
     this.root.add(this.body);
     this.body.scale.setScalar(scale);
+    const add = (parent: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, shadow = true) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.castShadow = shadow;
+      parent.add(m);
+      return m;
+    };
 
-    // 脚（股関節を原点にして回す）
+    // 脚（股関節を原点にして回す）。長ズボン・半ズボン・スカート
     for (const [hip, x] of [[this.hipL, 0.09], [this.hipR, -0.09]] as const) {
       hip.position.set(x, 0.55, 0);
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.5, 0.12), pants);
-      leg.position.y = -0.25;
-      leg.castShadow = true;
-      hip.add(leg);
-      const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.07, 0.2), shoes);
-      shoe.position.set(0, -0.515, 0.04);
-      shoe.castShadow = true;
-      hip.add(shoe);
+      if (bottoms === 'long') {
+        add(hip, new THREE.BoxGeometry(0.11, 0.5, 0.12), pants, 0, -0.25, 0);
+      } else {
+        if (bottoms === 'shorts') add(hip, new THREE.BoxGeometry(0.12, 0.2, 0.13), pants, 0, -0.1, 0);
+        add(hip, new THREE.BoxGeometry(0.09, bottoms === 'shorts' ? 0.3 : 0.5, 0.1), skin, 0, bottoms === 'shorts' ? -0.35 : -0.25, 0);
+        add(hip, new THREE.BoxGeometry(0.1, 0.1, 0.11), socks, 0, -0.44, 0);
+      }
+      add(hip, new THREE.BoxGeometry(0.12, 0.07, 0.2), shoes, 0, -0.515, 0.04);
       this.body.add(hip);
     }
+    if (bottoms === 'skirt') add(this.body, new THREE.CylinderGeometry(0.17, 0.25, 0.24, 8), pants, 0, 0.5, 0);
 
-    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.42, 0.2), shirt);
-    torso.position.y = 0.76;
-    torso.castShadow = true;
-    this.body.add(torso);
+    add(this.body, new THREE.BoxGeometry(0.34, 0.42, 0.2), shirt, 0, 0.76, 0);
+    add(this.body, new THREE.IcosahedronGeometry(0.16, 1), skin, 0, 1.13, 0);
 
-    const head = new THREE.Mesh(new THREE.IcosahedronGeometry(0.16, 1), skin);
-    head.position.y = 1.13;
-    head.castShadow = true;
-    this.body.add(head);
-    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(0.168, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), hair);
-    hairCap.position.y = 1.15;
-    hairCap.rotation.x = -0.25;
-    this.body.add(hairCap);
+    // 髪型
+    const cap = add(this.body, new THREE.SphereGeometry(0.168, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), hair, 0, 1.15, 0);
+    cap.rotation.x = -0.25;
+    if (hairStyle === 'bob') add(this.body, new THREE.BoxGeometry(0.36, 0.2, 0.26), hair, 0, 1.07, -0.04);
+    if (hairStyle === 'pony') {
+      const tail = add(this.body, new THREE.CylinderGeometry(0.05, 0.03, 0.22, 6), hair, 0, 1.08, -0.18);
+      tail.rotation.x = 0.5;
+    }
+    if (hairStyle === 'twin') for (const sx of [-1, 1]) add(this.body, new THREE.IcosahedronGeometry(0.06, 0), hair, sx * 0.17, 1.06, -0.05);
 
-    // ランドセル
-    const bag = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.36, 0.18), lambert(randoseruColors[Math.floor(rand() * randoseruColors.length)]));
-    bag.position.set(0, 0.8, -0.19);
-    bag.castShadow = true;
-    this.body.add(bag);
+    // 通学帽（黄色い帽子か紅白帽）
+    if (hat) {
+      const hatMat = lambert(hat === 'yellow' ? 0xf2c230 : 0xd8433a);
+      add(this.body, new THREE.SphereGeometry(0.175, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.5), hatMat, 0, 1.17, 0);
+      if (hat === 'yellow') add(this.body, new THREE.CylinderGeometry(0.24, 0.24, 0.02, 12), hatMat, 0, 1.17, 0, false);
+      else add(this.body, new THREE.BoxGeometry(0.2, 0.02, 0.1), hatMat, 0, 1.17, 0.17, false);
+    }
+
+    // ランドセル（1年生は黄色いカバー）
+    add(this.body, new THREE.BoxGeometry(0.32, 0.36, 0.18), lambert(pick([0xb3362c, 0x2d3a55, 0x6b3f2a, 0xd77ca0, 0x3f6e5a, 0x6a4c8a, 0x88a9c9, 0x3a3a3a, 0xc96a2c])), 0, 0.8, -0.19);
+    if (rand() < 0.25) add(this.body, new THREE.BoxGeometry(0.33, 0.22, 0.02), lambert(0xf2d43a), 0, 0.88, -0.285, false);
 
     for (const [arm, x] of [[this.armL, 0.21], [this.armR, -0.21]] as const) {
       arm.position.set(x, 0.95, 0);
-      const a = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.38, 0.09), shirt);
-      a.position.y = -0.19;
-      a.castShadow = true;
-      arm.add(a);
-      const hand = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.07), skin);
-      hand.position.y = -0.41;
-      arm.add(hand);
+      add(arm, new THREE.BoxGeometry(0.08, 0.38, 0.09), shirt, 0, -0.19, 0);
+      add(arm, new THREE.BoxGeometry(0.07, 0.07, 0.07), skin, 0, -0.41, 0, false);
       this.body.add(arm);
     }
+  }
+
+  /** 片付け：主人公の形と材質を捨てる */
+  dispose() {
+    this.root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) (m.material as THREE.Material).dispose();
+    });
   }
 
   get position() {

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { buildWorld } from './world';
-import { carRoadAt, groundAt, hazardAt, isAtHome, routePoint, routeProgress, ROUTE_LENGTH, sidewalkAt, START } from './level';
-import { Stone } from './stone';
+import { buildWorld, disposeWorld } from './world';
+import { Level } from './level';
+import { Stone, stoneName } from './stone';
+import { addToCollection, showCollection } from './collection';
 import { Kid, KICK_OFFSET } from './kid';
 import { KickInputController, OVERCHARGE_MAX, type KickInput } from './input';
 import { AimGuide } from './aimGuide';
@@ -10,7 +11,7 @@ import { Sfx } from './audio';
 import { clamp, damp, gaussian } from './rng';
 
 type GameState = 'title' | 'ready' | 'kicking' | 'rolling' | 'chasing' | 'arrived' | 'clear' | 'lost' | 'over';
-type LostReason = 'gutter' | 'grass' | 'grate' | 'car';
+type LostReason = 'gutter' | 'grass' | 'grate' | 'water' | 'car';
 
 const FIXED_DT = 1 / 120;
 /** 足が石に当たるまでの時間（キックモーションと合わせる） */
@@ -23,6 +24,7 @@ const LOST_TEXT: Record<LostReason, string> = {
   gutter: '石が側溝に落ちてしまった。',
   grass: '石が草むらに消えてしまった。',
   grate: '石が集水ますの格子にはまってしまった。',
+  water: '石が田んぼに落ちてしまった。',
   car: '石が車にはじかれてしまった。',
 };
 
@@ -42,7 +44,21 @@ const el = {
   ovTitle: document.querySelector<HTMLElement>('#ov-title')!,
   ovBody: document.querySelector<HTMLElement>('#ov-body')!,
   ovAction: document.querySelector<HTMLElement>('#ov-action')!,
+  toast: document.querySelector<HTMLElement>('#toast')!,
+  ovCollection: document.querySelector<HTMLElement>('#ov-collection')!,
+  collection: document.querySelector<HTMLElement>('#collection')!,
+  collectionGrid: document.querySelector<HTMLElement>('#collection-grid')!,
+  collectionClose: document.querySelector<HTMLElement>('#collection-close')!,
 };
+
+let toastTimer = 0;
+/** 画面上部に数秒だけ出るお知らせ */
+function showToast(text: string) {
+  el.toast.textContent = text;
+  el.toast.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => el.toast.classList.remove('on'), 3500);
+}
 
 // ---------- three.js ----------
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -59,7 +75,8 @@ scene.fog = new THREE.Fog(skyColor, 30, 70);
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 120);
 
 // 午後の斜光：低い位置からの暖色光と長い影
-scene.add(new THREE.HemisphereLight(0xfff1d6, 0x8a7a5c, 1.4));
+const hemi = new THREE.HemisphereLight(0xfff1d6, 0x8a7a5c, 1.4);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffd59a, 2.2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(1024, 1024);
@@ -71,13 +88,12 @@ sun.shadow.camera.near = 1;
 sun.shadow.camera.far = 60;
 sun.shadow.bias = -0.0005;
 sun.shadow.normalBias = 0.02;
-const SUN_OFFSET = new THREE.Vector3(-14, 11, -6);
 scene.add(sun, sun.target);
 
-scene.add(buildWorld(20260401));
-
-const traffic = new Traffic();
-scene.add(traffic.group);
+/** その日の通学路と、そこを走る車 */
+let level!: Level;
+let worldGroup: THREE.Group | null = null;
+let traffic!: Traffic;
 
 const guide = new AimGuide();
 scene.add(guide.group);
@@ -93,6 +109,8 @@ let kicks = 0;
 let stateTime = 0;
 let pendingKick: { angle: number; power: number; spin: number } | null = null;
 let hintShown = true;
+/** 今日の石の種（コレクションに残す） */
+let stoneSeed = 0;
 let lostReason: LostReason = 'gutter';
 /** 今回の下校で石が進んだ最長の道のり */
 let bestProgress = 0;
@@ -115,11 +133,13 @@ interface Records {
   bestKicks: number | null;
   /** 最長の下校距離 [m] */
   longest: number;
+  /** これまでに蹴った回数 */
+  totalKicks: number;
 }
 const records: Records = loadRecords();
 
 function loadRecords(): Records {
-  const base: Records = { cleared: 0, plays: 0, bestKicks: null, longest: 0 };
+  const base: Records = { cleared: 0, plays: 0, bestKicks: null, longest: 0, totalKicks: 0 };
   try {
     const r = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '');
     if (r && typeof r.cleared === 'number') return { ...base, ...r };
@@ -137,25 +157,66 @@ function saveRecords() {
   }
 }
 
-function spawnStoneAndKid() {
+/** その日の空模様。毎回ちがう下校の時間帯になる */
+const SKIES = [
+  { name: 'ひるさがり', sky: 0xf6dcae, sun: 0xffd59a, sunI: 2.2, hemi: 1.4, offset: new THREE.Vector3(-14, 11, -6) },
+  { name: 'ゆうがた', sky: 0xf2b48a, sun: 0xff9a62, sunI: 2.0, hemi: 1.15, offset: new THREE.Vector3(-16, 6.5, -9) },
+  { name: 'くもり', sky: 0xd9d9d2, sun: 0xf4f1ea, sunI: 0.9, hemi: 2.0, offset: new THREE.Vector3(-8, 14, -4) },
+];
+let sunOffset = SKIES[0].offset;
+let daySky = SKIES[0].name;
+
+/** 新しい一日：通学路・車・空・主人公・石を作り直す */
+function setupDay(daySeed: number) {
   if (stone) scene.remove(stone.mesh);
-  if (kid) scene.remove(kid.root);
-  const seed = (Math.random() * 2 ** 31) | 0;
-  stone = new Stone(seed, { onImpact: (s) => sfx.impact(s) });
-  stone.place(START.x, START.z);
+  if (kid) {
+    scene.remove(kid.root);
+    kid.dispose();
+  }
+  if (stone) stone.dispose();
+  if (worldGroup) {
+    scene.remove(worldGroup);
+    disposeWorld(worldGroup);
+  }
+  if (traffic) {
+    scene.remove(traffic.group);
+    traffic.dispose();
+  }
+  level = new Level(daySeed);
+  worldGroup = buildWorld(level);
+  scene.add(worldGroup);
+  traffic = new Traffic(level);
+  scene.add(traffic.group);
+  traffic.reset();
+
+  const sky = SKIES[Math.abs(daySeed) % SKIES.length];
+  skyColor.setHex(sky.sky);
+  (scene.fog as THREE.Fog).color.setHex(sky.sky);
+  sun.color.setHex(sky.sun);
+  sun.intensity = sky.sunI;
+  hemi.intensity = sky.hemi;
+  sunOffset = sky.offset;
+  daySky = sky.name;
+
+  stoneSeed = (daySeed ^ 0x6a09e667) >>> 0;
+  stone = new Stone(stoneSeed, level, { onImpact: (s) => sfx.impact(s) });
+  stone.place(level.start.x, level.start.z);
   scene.add(stone.mesh);
 
-  kid = new Kid(seed ^ 0x5bd1e995);
+  kid = new Kid(daySeed ^ 0x5bd1e995);
   kid.heading = aimCenter();
   kickSpot(kid.heading, kid.position);
+  kid.position.y = level.groundAt(kid.position.x, kid.position.z);
   scene.add(kid.root);
   camYaw = aimCenter() + CAM_SIDE_ANGLE;
   camFocus.copy(stone.position);
 }
 
-function newRun() {
-  spawnStoneAndKid();
-  traffic.reset();
+const newDaySeed = () => (Math.random() * 2 ** 31) | 0;
+
+/** fresh なら新しい一日を作る。タイトルからは、背景に見えていたその日の道で始める */
+function newRun(fresh: boolean) {
+  if (fresh) setupDay(newDaySeed());
   kicks = 0;
   bestProgress = 0;
   records.plays++;
@@ -163,13 +224,14 @@ function newRun() {
   el.overlay.classList.remove('on');
   el.status.classList.remove('off');
   el.hint.classList.toggle('off', !hintShown);
+  showToast(`きょうの石：${stoneName(stone.traits)}`);
   enterReady();
 }
 
 /** 次のキックの基準方向。帰り道に沿って少し先を向く。 */
 function aimCenter(): number {
   const p = stone.position;
-  const [tx, tz] = routePoint(routeProgress(p.x, p.z) + AIM_LOOKAHEAD);
+  const [tx, tz] = level.routePoint(level.routeProgress(p.x, p.z) + AIM_LOOKAHEAD);
   if (Math.hypot(tx - p.x, tz - p.z) < 0.3) return kid ? kid.heading : 0;
   return Math.atan2(tx - p.x, tz - p.z);
 }
@@ -194,8 +256,8 @@ function kidGo(target: THREE.Vector3, speed: number, dt: number): 'moving' | 'ar
   const p = kid.position;
   // 車道にある目標へは、まず今いる歩道の上を一番近いところまで歩いてから降りる
   let goal = target;
-  const sw = sidewalkAt(p.x, p.z);
-  if (sw && carRoadAt(target.x, target.z)) {
+  const sw = level.sidewalkAt(p.x, p.z);
+  if (sw && level.carRoadAt(target.x, target.z)) {
     const wx = clamp(target.x, sw.x0 + 0.25, sw.x1 - 0.25);
     const wz = clamp(target.z, sw.z0 + 0.25, sw.z1 - 0.25);
     // 近くまで来ていれば、そこから車道へ降りる（行き来して止まらないよう余裕を持たせる）
@@ -209,8 +271,8 @@ function kidGo(target: THREE.Vector3, speed: number, dt: number): 'moving' | 'ar
     const probe = Math.min(d, speed * dt + 0.3);
     const nx = p.x + (dx / d) * probe;
     const nz = p.z + (dz / d) * probe;
-    const next = carRoadAt(nx, nz);
-    if (next && next !== carRoadAt(p.x, p.z) && !traffic.mayCross(next, nx, nz, target.x, target.z)) {
+    const next = level.carRoadAt(nx, nz);
+    if (next && next !== level.carRoadAt(p.x, p.z) && !traffic.mayCross(next, nx, nz, target.x, target.z)) {
       waitingFor = next.crossing === 'signal' ? 'signal' : 'car';
       kid.turnTo(Math.atan2(dx, dz), dt, 6);
       return 'waiting';
@@ -248,10 +310,16 @@ input.onKick = (k: KickInput) => {
 };
 
 canvas.addEventListener('pointerdown', () => sfx.unlock());
+// コレクション：結果画面のボタンから開く（画面のタップで次へ進まないように止める）
+el.ovCollection.addEventListener('pointerdown', (e) => e.stopPropagation());
+el.ovCollection.addEventListener('click', () => showCollection(el.collection, el.collectionGrid, level));
+el.collectionClose.addEventListener('click', () => el.collection.classList.remove('on'));
+
 el.overlay.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   sfx.unlock();
-  if (state === 'title' || state === 'clear' || state === 'over') newRun();
+  if (state === 'title') newRun(false);
+  else if (state === 'clear' || state === 'over') newRun(true);
 });
 
 // ---------- 更新 ----------
@@ -262,20 +330,25 @@ function checkLost(): boolean {
   const p = stone.position;
   const car = traffic.hitTest(p.x, p.z, p.y, stone.traits.radius);
   if (car) {
-    const dir = car.lane.dir;
-    stone.launch(dir * (car.speed * 0.8 + 1.5), 2.5 + Math.random() * 1.5, (Math.random() - 0.5) * 1.5);
+    // 車の進む向きにはじかれる
+    const push = car.lane.dir * (car.speed * 0.8 + 1.5);
+    const side = (Math.random() - 0.5) * 1.5;
+    const up = 2.5 + Math.random() * 1.5;
+    if (car.lane.axis === 'x') stone.launch(push, up, side);
+    else stone.launch(side, up, push);
     sfx.thud();
     lose('car');
     return true;
   }
   if (!stone.onGround) return false;
-  const h = hazardAt(p.x, p.z);
+  const h = level.hazardAt(p.x, p.z);
   if (!h) return false;
-  if (h.kind === 'gutter') {
+  if (h.kind === 'grass') {
+    stone.sink();
+  } else {
+    // 側溝・集水ます・田んぼ：縁から落ちて沈む
     stone.fallInto(h.rect);
     sfx.plop();
-  } else {
-    stone.sink();
   }
   lose(h.kind);
   return true;
@@ -300,7 +373,7 @@ function fixedUpdate(dt: number) {
       kid.update(dt);
       return;
     }
-    bestProgress = Math.max(bestProgress, routeProgress(stone.position.x, stone.position.z));
+    bestProgress = Math.max(bestProgress, level.routeProgress(stone.position.x, stone.position.z));
   }
 
   switch (state) {
@@ -322,6 +395,7 @@ function fixedUpdate(dt: number) {
         sfx.kick(Math.min(1, pendingKick.power));
         pendingKick = null;
         kicks++;
+        records.totalKicks++;
         state = 'rolling';
         stateTime = 0;
       }
@@ -337,7 +411,7 @@ function fixedUpdate(dt: number) {
         kid.turnTo(Math.atan2(dx, dz), dt, 6);
       }
       if (!stone.moving) {
-        state = isAtHome(stone.position.x, stone.position.z) ? 'arrived' : 'chasing';
+        state = level.isAtHome(stone.position.x, stone.position.z) ? 'arrived' : 'chasing';
         stateTime = 0;
       }
       break;
@@ -364,7 +438,7 @@ function fixedUpdate(dt: number) {
   }
   kid.update(dt);
   // 歩道の段差を上り下りする
-  kid.position.y += (groundAt(kid.position.x, kid.position.z) - kid.position.y) * damp(18, dt);
+  kid.position.y += (level.groundAt(kid.position.x, kid.position.z) - kid.position.y) * damp(18, dt);
 }
 
 function recordProgress() {
@@ -374,11 +448,20 @@ function recordProgress() {
 function showClear() {
   state = 'clear';
   records.cleared++;
-  bestProgress = ROUTE_LENGTH;
+  bestProgress = level.routeLength;
   recordProgress();
   if (records.bestKicks === null || kicks < records.bestKicks) records.bestKicks = kicks;
   saveRecords();
-  showOverlay('ただいま', `今日の石を ${kicks} 回で連れて帰った。`, 'タップでもう一度');
+  const name = stoneName(stone.traits);
+  addToCollection({
+    seed: stoneSeed,
+    name,
+    date: new Date().toISOString(),
+    kicks,
+    distance: Math.round(level.routeLength),
+    difficulty: level.difficulty,
+  });
+  showOverlay('ただいま', `「${name}」を ${kicks} 回で連れて帰った。`, 'タップで次の日へ');
 }
 
 function showGameOver() {
@@ -391,10 +474,14 @@ function showGameOver() {
 function recordsLine() {
   const rate = records.plays ? Math.round((records.cleared / records.plays) * 100) : 0;
   return (
-    `<span class="small">持ち帰った石 ${records.cleared} 個（${rate}%）` +
-    (records.bestKicks !== null ? ` ／ 最少 ${records.bestKicks} 回` : '') +
-    ` ／ 最長 ${records.longest} m</span>`
+    `<span class="small">持ち帰った石 ${records.cleared} 個（${rate}%）／ 最長 ${records.longest} m` +
+    ` ／ これまで ${records.totalKicks} 回けった</span>`
   );
+}
+
+/** その日の道のようす（タイトルに出す） */
+function dayLine() {
+  return `<div class="day">きょうの みち：${level.difficultyLabel}・やく ${Math.round(level.routeLength)} m・${daySky}</div>`;
 }
 
 function showOverlay(title: string, body: string, action: string) {
@@ -470,15 +557,15 @@ function updateCamera(dt: number) {
   camera.position.set(camFocus.x - Math.sin(camYaw) * camDist, camHeight, camFocus.z - Math.cos(camYaw) * camDist);
   camera.lookAt(camFocus.x, 0.3, camFocus.z);
 
-  sun.position.copy(camFocus).add(SUN_OFFSET);
+  sun.position.copy(camFocus).add(sunOffset);
   sun.target.position.copy(camFocus);
 }
 const tmpFocus = new THREE.Vector3();
 
 function updateHud() {
-  const s = routeProgress(stone.position.x, stone.position.z);
+  const s = level.routeProgress(stone.position.x, stone.position.z);
   const home = state === 'arrived' || state === 'clear';
-  el.dist.textContent = home ? '0' : String(Math.max(0, Math.round(ROUTE_LENGTH - s)));
+  el.dist.textContent = home ? '0' : String(Math.max(0, Math.round(level.routeLength - s)));
   el.kicks.textContent = String(kicks);
   const charging = state === 'ready' && input.phase === 'charge';
   el.power.classList.toggle('on', charging);
@@ -495,7 +582,7 @@ function updateHud() {
   if (state !== 'title') traffic.updateWarnings(stone.position.x, stone.position.z);
   // 走行音：見ている場所の近くを車が通るほど大きく
   sfx.setTraffic(Math.max(0.12, 1 - traffic.nearestCar(camFocus.x, camFocus.z) / 18));
-  guide.group.position.y = groundAt(stone.position.x, stone.position.z) + 0.01;
+  guide.group.position.y = level.groundAt(stone.position.x, stone.position.z) + 0.01;
 }
 
 function resize() {
@@ -524,12 +611,11 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-// タイトル：通学路の風景の上に案内を出す
-spawnStoneAndKid();
-traffic.reset();
+// タイトル：その日の通学路の風景の上に案内を出す
+setupDay(newDaySeed());
 el.status.classList.add('off');
 el.hint.classList.add('off');
-showOverlay('いしころ', '今日の石を、家まで連れて帰ろう。', 'タップで はじめる');
+showOverlay('いしころ', `今日の石を、家まで連れて帰ろう。${dayLine()}`, 'タップで はじめる');
 requestAnimationFrame(frame);
 
 // デバッグ用（コンソールから石の性格や状態を確認）
@@ -538,7 +624,10 @@ Object.assign(window, {
     get stone() { return stone; },
     get kid() { return kid; },
     get state() { return state; },
-    traffic,
+    get level() { return level; },
+    /** 指定した種で新しい一日を始める（自動テスト用） */
+    day(seed: number) { setupDay(seed); newRun(false); },
+    get traffic() { return traffic; },
     input,
     /** 石が止まった直後の状態にする（自動テスト用） */
     chase() { input.disable(); state = 'chasing'; stateTime = 0; },

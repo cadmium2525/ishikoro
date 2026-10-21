@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CAR_ROADS, CROSSWALK, MAIN_ROAD, ROAD_A, type CarLaneDef, type CarRoad, type Rect, type SignalGroup } from './level';
+import { RA_X1, SW_X0, type CarLaneDef, type CarRoad, type Intersection, type Level, type Rect, type SignalGroup } from './level';
 
 const CAR_LEN = 3.8;
 const CAR_HALF_W = 0.85;
@@ -28,6 +28,10 @@ export class Signal {
   private static readonly CYCLE = Signal.A_START + Signal.A_GREEN + Signal.YELLOW + Signal.ALL_RED;
 
   t = 0;
+
+  constructor(readonly phase = 0) {
+    this.t = phase % Signal.CYCLE;
+  }
 
   update(dt: number) {
     this.t = (this.t + dt) % Signal.CYCLE;
@@ -90,14 +94,15 @@ interface Warning {
 }
 
 interface SignalLights {
-  car: { group: SignalGroup; mats: Record<CarLight, THREE.MeshBasicMaterial> }[];
-  ped: Record<'red' | 'green', THREE.MeshBasicMaterial>[];
+  car: { signal: number; group: SignalGroup; mats: Record<CarLight, THREE.MeshBasicMaterial> }[];
+  ped: { signal: number; red: THREE.MeshBasicMaterial; green: THREE.MeshBasicMaterial }[];
 }
 
 /** 車の出現・走行・信号停止と、石や子どもとの関わりを扱う */
 export class Traffic {
   readonly group = new THREE.Group();
-  readonly signal = new Signal();
+  /** 交差点ごとの信号 */
+  readonly signals: Signal[];
   cars: Car[] = [];
 
   private readonly timers = new Map<CarLaneDef, number>();
@@ -105,15 +110,17 @@ export class Traffic {
   private readonly warnings: Warning[] = [];
   private time = 0;
 
-  constructor() {
-    this.lights = buildSignals(this.group);
+  constructor(private readonly level: Level) {
+    this.signals = level.intersections.map((x) => new Signal(x.phase));
+    this.lights = { car: [], ped: [] };
+    level.intersections.forEach((x, i) => buildSignals(this.group, x, i, this.lights));
     const chevron = new THREE.Shape([
       new THREE.Vector2(-0.35, 0.5), new THREE.Vector2(0.25, 0), new THREE.Vector2(-0.35, -0.5),
       new THREE.Vector2(-0.1, 0), new THREE.Vector2(-0.35, 0.5),
     ]);
     const geo = new THREE.ShapeGeometry(chevron);
     geo.rotateX(-Math.PI / 2);
-    for (const road of CAR_ROADS) {
+    for (const road of level.carRoads) {
       for (const lane of road.lanes) {
         const mat = new THREE.MeshBasicMaterial({ color: 0xffc83a, transparent: true, depthWrite: false });
         const mesh = new THREE.Mesh(geo, mat);
@@ -132,15 +139,24 @@ export class Traffic {
     for (const c of this.cars) this.group.remove(c.mesh);
     this.cars = [];
     this.timers.clear();
-    this.signal.t = 0;
     for (let i = 0; i < 400; i++) this.update(0.1, null);
+  }
+
+  /** 使い終わった車や信号の形状を片付ける */
+  dispose() {
+    for (const c of this.cars) this.group.remove(c.mesh);
+    this.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) (m.material as THREE.Material).dispose();
+    });
   }
 
   update(dt: number, kid: { x: number; z: number } | null) {
     this.time += dt;
-    this.signal.update(dt);
+    for (const s of this.signals) s.update(dt);
 
-    for (const road of CAR_ROADS) {
+    for (const road of this.level.carRoads) {
       for (const lane of road.lanes) {
         const t = (this.timers.get(lane) ?? Math.random() * lane.interval[1]) - dt;
         if (t <= 0) {
@@ -164,14 +180,13 @@ export class Traffic {
         const d = (other.s - car.s) * dir - CAR_LEN;
         if (d > -CAR_LEN && d < gap) gap = d - 2;
       }
-      // 信号
-      if (lane.stopAt !== undefined && lane.signal) {
-        const light = this.signal.car(lane.signal);
-        if (light !== 'green') {
-          const d = (lane.stopAt - car.front) * dir;
-          const canStop = d > (car.speed * car.speed) / (2 * BRAKE) - 0.5;
-          if (d > -0.5 && (light === 'red' || canStop)) gap = Math.min(gap, d);
-        }
+      // 信号（この先にある交差点のうち、赤・黄のもの）
+      for (const stop of lane.stops) {
+        const light = this.signals[stop.signal].car(stop.group);
+        if (light === 'green') continue;
+        const d = (stop.at - car.front) * dir;
+        const canStop = d > (car.speed * car.speed) / (2 * BRAKE) - 0.5;
+        if (d > -0.5 && (light === 'red' || canStop)) gap = Math.min(gap, d);
       }
       // 車線にいる子ども（石には気づかない）
       if (kid && Math.abs(across(lane, kid.x, kid.z) - lane.c) < LANE_BAND) {
@@ -222,7 +237,7 @@ export class Traffic {
    * 子どもがこの車道へ降りてよいか。(tx, tz) は行き先で、その近くの車線だけを見る。
    */
   mayCross(road: CarRoad, x: number, z: number, tx: number, tz: number): boolean {
-    if (road.crossing === 'signal') return this.signal.ped === 'green';
+    if (road.crossing === 'signal') return this.signals[road.signal ?? 0].ped === 'green';
     return !this.cars.some((c) => {
       if (!road.lanes.includes(c.lane)) return false;
       if (Math.abs(across(c.lane, tx, tz) - c.lane.c) > 2.2) return false;
@@ -270,12 +285,13 @@ export class Traffic {
 
   private updateLights() {
     for (const head of this.lights.car) {
-      const light = this.signal.car(head.group);
+      const light = this.signals[head.signal].car(head.group);
       for (const k of ['green', 'yellow', 'red'] as const) head.mats[k].color.setHex(k === light ? LIT[k] : DIM);
     }
-    const ped = this.signal.ped;
-    const blinkOn = ped === 'green' || (ped === 'blink' && Math.floor(this.signal.t * 3) % 2 === 0);
     for (const head of this.lights.ped) {
+      const signal = this.signals[head.signal];
+      const ped = signal.ped;
+      const blinkOn = ped === 'green' || (ped === 'blink' && Math.floor(signal.t * 3) % 2 === 0);
       head.green.color.setHex(blinkOn ? LIT.green : DIM);
       head.red.color.setHex(ped === 'red' ? LIT.red : DIM);
     }
@@ -287,30 +303,46 @@ const DIM = 0x2c2f33;
 
 const lambert = (color: number) => new THREE.MeshLambertMaterial({ color, flatShading: true });
 
+/** 車の形と材質は全部の車で共有する（出ては消えるので毎回作ると GPU のメモリが増え続ける） */
+const carParts = (() => {
+  const wheel = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 10);
+  wheel.rotateZ(Math.PI / 2);
+  return {
+    body: new THREE.BoxGeometry(CAR_HALF_W * 2, 0.7, CAR_LEN),
+    cabin: new THREE.BoxGeometry(CAR_HALF_W * 2 - 0.15, 0.55, 2.0),
+    roof: new THREE.BoxGeometry(CAR_HALF_W * 2 - 0.2, 0.06, 1.8),
+    wheel,
+    lamp: new THREE.BoxGeometry(0.3, 0.12, 0.05),
+    glass: lambert(0x3d4a57),
+    tire: lambert(0x222222),
+    light: new THREE.MeshBasicMaterial({ color: 0xfff2c4 }),
+    paint: new Map<number, THREE.Material>(),
+  };
+})();
+
 function buildCarMesh(color: number): THREE.Group {
+  const P = carParts;
+  let paint = P.paint.get(color);
+  if (!paint) P.paint.set(color, (paint = lambert(color)));
   const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(CAR_HALF_W * 2, 0.7, CAR_LEN), lambert(color));
+  const body = new THREE.Mesh(P.body, paint);
   body.position.y = 0.55;
   body.castShadow = true;
   g.add(body);
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(CAR_HALF_W * 2 - 0.15, 0.55, 2.0), lambert(0x3d4a57));
+  const cabin = new THREE.Mesh(P.cabin, P.glass);
   cabin.position.set(0, 1.17, -0.25);
   cabin.castShadow = true;
   g.add(cabin);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(CAR_HALF_W * 2 - 0.2, 0.06, 1.8), lambert(color));
+  const roof = new THREE.Mesh(P.roof, paint);
   roof.position.set(0, 1.47, -0.3);
   g.add(roof);
-  const wheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 10);
-  wheelGeo.rotateZ(Math.PI / 2);
-  const wheelMat = lambert(0x222222);
   for (const [x, z] of [[-0.8, 1.2], [0.8, 1.2], [-0.8, -1.2], [0.8, -1.2]]) {
-    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    const w = new THREE.Mesh(P.wheel, P.tire);
     w.position.set(x, 0.3, z);
     g.add(w);
   }
-  const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff2c4 });
   for (const x of [-0.55, 0.55]) {
-    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.05), lampMat);
+    const lamp = new THREE.Mesh(P.lamp, P.light);
     lamp.position.set(x, 0.65, CAR_LEN / 2 + 0.01);
     g.add(lamp);
   }
@@ -318,10 +350,9 @@ function buildCarMesh(color: number): THREE.Group {
 }
 
 /** 交差点に車用・歩行者用の信号機を立てる */
-function buildSignals(group: THREE.Group): SignalLights {
+function buildSignals(group: THREE.Group, x: Intersection, index: number, lights: SignalLights) {
   const poleMat = lambert(0x8e8a84);
   const housingMat = lambert(0x5d6066);
-  const lights: SignalLights = { car: [], ped: [] };
   const lampGeo = new THREE.CircleGeometry(0.11, 12);
 
   const pole = (x: number, z: number, h: number) => {
@@ -354,7 +385,7 @@ function buildSignals(group: THREE.Group): SignalLights {
     head.position.set(x, 4.4, z);
     head.rotation.y = facing;
     group.add(head);
-    lights.car.push({ group: signal, mats });
+    lights.car.push({ signal: index, group: signal, mats });
   };
 
   const pedHead = (x: number, z: number, facing: number) => {
@@ -374,19 +405,18 @@ function buildSignals(group: THREE.Group): SignalLights {
     head.position.set(x, 2.6, z);
     head.rotation.y = facing;
     group.add(head);
-    lights.ped.push({ red, green });
+    lights.ped.push({ signal: index, red, green });
   };
 
-  const z0 = MAIN_ROAD.z0;
-  const z1 = MAIN_ROAD.z1;
+  const z0 = x.rz0;
+  const z1 = x.rz1;
   // 大通り：東行き（手前の車線）と西行き
-  carHead('B', CROSSWALK.x0 - 0.8, 62, -Math.PI / 2, CROSSWALK.x0 - 0.8, z0 - 1);
-  carHead('B', ROAD_A.x1 + 0.8, 66, Math.PI / 2, ROAD_A.x1 + 0.8, z1 + 1);
+  carHead('B', SW_X0 - 0.8, z0 + 2, -Math.PI / 2, SW_X0 - 0.8, z0 - 1);
+  carHead('B', RA_X1 + 0.8, z1 - 2, Math.PI / 2, RA_X1 + 0.8, z1 + 1);
   // 道A：北行きと南行き
-  carHead('A', 4.3, z0 - 0.6, Math.PI, ROAD_A.x1 + 1, z0 - 0.6);
-  carHead('A', 1.3, z1 + 0.6, 0, ROAD_A.x1 + 1, z1 + 0.6);
+  carHead('A', 4.3, z0 - 0.6, Math.PI, RA_X1 + 1, z0 - 0.6);
+  carHead('A', 1.3, z1 + 0.6, 0, RA_X1 + 1, z1 + 0.6);
   // 歩行者用：渡る先（奥）に、こちら向き。帰りに見る手前側も
-  pedHead(CROSSWALK.x0 + 0.3, z1 + 0.5, Math.PI);
-  pedHead(CROSSWALK.x0 + 0.3, z0 - 0.5, 0);
-  return lights;
+  pedHead(SW_X0 + 0.3, z1 + 0.5, Math.PI);
+  pedHead(SW_X0 + 0.3, z0 - 0.5, 0);
 }

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createRng } from './rng';
-import { CURB_HEIGHT, CURBS, groundAt, POLES, WALLS, type Rect } from './level';
+import { CURB_HEIGHT, type Level, type Rect } from './level';
 
 const G = 9.8;
 /** スピンによる横方向加速度の最大値 [m/s²] */
@@ -32,6 +32,24 @@ export function randomTraits(rand: () => number): StoneTraits {
   };
 }
 
+/** 石の性格から呼び名をつける（数値を見せずに個性を伝える） */
+export function stoneName(t: StoneTraits): string {
+  const words: string[] = [];
+  if (t.radius > 0.125) words.push('おおきな');
+  else if (t.radius < 0.1) words.push('ちいさな');
+  if (t.mass > 1.15) words.push('おもたい');
+  else if (t.mass < 0.85) words.push('かるい');
+  const noun =
+    t.roundness > 0.82 ? 'まるいし'
+      : t.eccentricity > 0.45 ? 'いびつな いし'
+        : t.roundness < 0.4 ? 'ごつごつ いし'
+          : t.restitution > 0.52 ? 'よくはねる いし'
+            : 'いし';
+  // 形容がなければ色で呼ぶ
+  if (words.length === 0 && noun === 'いし') words.push('みちばたの');
+  return [...words, noun].join(' ');
+}
+
 export interface StoneEvents {
   /** 塀・電柱・地面にぶつかった。strength は 0..1 程度 */
   onImpact?: (strength: number) => void;
@@ -54,7 +72,11 @@ export class Stone {
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly lostTarget = new THREE.Vector3();
 
-  constructor(seed: number, private readonly events: StoneEvents = {}) {
+  constructor(
+    seed: number,
+    private readonly level: Level,
+    private readonly events: StoneEvents = {},
+  ) {
     const rand = createRng(seed);
     this.traits = randomTraits(rand);
     this.wobbleOffset = rand() * Math.PI * 2;
@@ -63,8 +85,13 @@ export class Stone {
     this.mesh.rotation.set(rand() * 6, rand() * 6, rand() * 6);
   }
 
+  dispose() {
+    this.mesh.geometry.dispose();
+    (this.mesh.material as THREE.Material).dispose();
+  }
+
   place(x: number, z: number) {
-    this.position.set(x, groundAt(x, z) + this.traits.radius, z);
+    this.position.set(x, this.level.groundAt(x, z) + this.traits.radius, z);
     this.velocity.set(0, 0, 0);
     this.spin = 0;
     this.moving = false;
@@ -91,7 +118,7 @@ export class Stone {
 
   /** 石の中心が地面に接するときの高さ */
   get floor() {
-    return groundAt(this.position.x, this.position.z) + this.traits.radius;
+    return this.level.groundAt(this.position.x, this.position.z) + this.traits.radius;
   }
 
   /** 地面に接しているか（バウンド中は false） */
@@ -208,17 +235,18 @@ export class Stone {
     const r = this.traits.radius;
     const p = this.position;
 
-    for (const w of WALLS) {
+    const level = this.level;
+    for (const w of level.walls) {
       // 線分上の最近点
       const sx = w.x2 - w.x1;
       const sz = w.z2 - w.z1;
       const tt = Math.max(0, Math.min(1, ((p.x - w.x1) * sx + (p.z - w.z1) * sz) / (sx * sx + sz * sz)));
       this.pushOut(w.x1 + sx * tt, w.z1 + sz * tt, r);
     }
-    for (const pole of POLES) this.pushOut(pole.x, pole.z, r + pole.radius);
+    for (const pole of level.poles) this.pushOut(pole.x, pole.z, r + pole.radius);
     // 縁石：車道側にいて、石の底が縁石の上面より低いときだけ跳ね返る
     if (p.y - r < CURB_HEIGHT - 0.02) {
-      for (const c of CURBS) {
+      for (const c of level.curbs) {
         const sx = c.x2 - c.x1;
         const sz = c.z2 - c.z1;
         const tt = ((p.x - c.x1) * sx + (p.z - c.z1) * sz) / (sx * sx + sz * sz);
@@ -229,8 +257,8 @@ export class Stone {
       }
     }
     if (p.y < 0.8) {
-      for (const o of obstacles) {
-        this.pushOut(Math.max(o.x0, Math.min(o.x1, p.x)), Math.max(o.z0, Math.min(o.z1, p.z)), r);
+      for (const list of [level.blocks, obstacles]) {
+        for (const o of list) this.pushOut(Math.max(o.x0, Math.min(o.x1, p.x)), Math.max(o.z0, Math.min(o.z1, p.z)), r);
       }
     }
   }

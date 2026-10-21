@@ -57,6 +57,22 @@
       }
       #msg.on { opacity: 1; }
 
+      #toast {
+        top: calc(max(12px, env(safe-area-inset-top)) + 76px);
+        left: 50%;
+        transform: translateX(-50%);
+        max-width: calc(100vw - 48px);
+        width: max-content;
+        padding: 6px 14px;
+        border-radius: 10px;
+        background: var(--paper);
+        font-size: 13px;
+        text-align: center;
+        opacity: 0;
+        transition: opacity 0.5s;
+      }
+      #toast.on { opacity: 1; }
+
       #power {
         right: max(16px, env(safe-area-inset-right));
         top: 50%;
@@ -134,6 +150,44 @@
       #overlay .small { font-size: 13px; opacity: 0.75; }
       #overlay .action { margin-top: 6px; font-size: 14px; color: #a0602c; }
       #overlay.title { align-items: center; background: rgba(255, 240, 215, 0.35); }
+      #overlay .day { font-size: 13px; margin: 2px 0 4px; }
+      #overlay button, #collection button {
+        font: inherit;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid rgba(74, 58, 42, 0.25);
+        border-radius: 999px;
+        padding: 5px 14px;
+        margin-top: 8px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      #collection {
+        position: fixed; inset: 0;
+        display: none;
+        flex-direction: column;
+        background: #fff8ec;
+        padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+        box-sizing: border-box;
+        overflow-y: auto;
+        touch-action: pan-y;
+      }
+      #collection.on { display: flex; }
+      #collection header { display: flex; align-items: center; justify-content: space-between; }
+      #collection h2 { margin: 0; font-size: 18px; letter-spacing: 0.1em; }
+      #collection header button { margin: 0; }
+      #collection-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .stone-card { text-align: center; font-size: 12px; line-height: 1.4; }
+      .stone-card img { width: 100%; max-width: 112px; aspect-ratio: 1; border-radius: 12px; background: #efe2c8; }
+      .stone-name { font-weight: bold; }
+      .stone-meta { opacity: 0.7; font-size: 11px; }
+      #collection .empty { opacity: 0.7; }
       #overlay.title h1 { font-size: 40px; letter-spacing: 0.3em; margin-right: -0.3em; }
     </style>
   </head>
@@ -145,6 +199,7 @@
       <span>けった <b id="kicks">0</b> 回</span>
     </div>
     <div id="msg" class="hud"></div>
+    <div id="toast" class="hud"></div>
     <div id="power" class="hud"><div class="danger"></div><div class="fill"></div></div>
     <div id="spin" class="hud"><div class="dot"></div></div>
     <div id="hint" class="hud">タップで方向 → 長押しで強さ →<br />左右にずらして回転 → はなして蹴る</div>
@@ -154,7 +209,16 @@
         <h1 id="ov-title">ただいま</h1>
         <div id="ov-body"></div>
         <div id="ov-action" class="action"></div>
+        <button id="ov-collection" type="button">いしの コレクション</button>
       </div>
+    </div>
+
+    <div id="collection">
+      <header>
+        <h2>もちかえった いし</h2>
+        <button id="collection-close" type="button">とじる</button>
+      </header>
+      <div id="collection-grid"></div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>
