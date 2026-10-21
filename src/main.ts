@@ -242,12 +242,19 @@ function kickSpot(heading: number, out = new THREE.Vector3()): THREE.Vector3 {
   const p = stone.position;
   // 主人公のローカル -X（右手側）方向へ左足の分だけずらす
   const side = -0.09;
-  return out.set(
+  out.set(
     p.x - Math.sin(heading) * KICK_OFFSET + Math.cos(heading) * side,
     0,
     p.z - Math.cos(heading) * KICK_OFFSET - Math.sin(heading) * side,
   );
+  // 塀ぎわの石では、立ち位置が塀の向こうにならないよう石の側へ寄せてから、塀にめり込まない位置に立つ
+  if (!level.clearPath(p.x, p.z, out.x, out.z)) out.set(p.x + (out.x - p.x) * 0.2, 0, p.z + (out.z - p.z) * 0.2);
+  level.pushOutCircle(out, KID_RADIUS);
+  return out;
 }
+
+/** 子どもの体の半径（塀や電柱にめり込まないように） */
+const KID_RADIUS = 0.22;
 
 /**
  * 子どもを目標へ動かす。歩道を歩き、車道へ降りる前は信号・車を確認して待つ。
@@ -263,6 +270,13 @@ function kidGo(target: THREE.Vector3, speed: number, dt: number): 'moving' | 'ar
     const wz = clamp(target.z, sw.z0 + 0.25, sw.z1 - 0.25);
     // 近くまで来ていれば、そこから車道へ降りる（行き来して止まらないよう余裕を持たせる）
     if (Math.hypot(wx - p.x, wz - p.z) > 0.6) goal = tmpWaypoint.set(wx, 0, wz);
+  }
+  // 塀にさえぎられて真っすぐ行けないときは、帰り道に沿って回り込む
+  if (!level.clearPath(p.x, p.z, goal.x, goal.z)) {
+    const s0 = level.routeProgress(p.x, p.z);
+    const s1 = level.routeProgress(goal.x, goal.z);
+    const [rx, rz] = level.routePoint(s0 + Math.sign(s1 - s0) * 2);
+    goal = tmpDetour.set(rx, 0, rz);
   }
 
   const dx = goal.x - p.x;
@@ -281,9 +295,11 @@ function kidGo(target: THREE.Vector3, speed: number, dt: number): 'moving' | 'ar
   }
   waitingFor = null;
   const reached = kid.moveToward(goal, speed, dt);
+  level.pushOutCircle(p, KID_RADIUS);
   return reached && goal === target ? 'arrived' : 'moving';
 }
 const tmpWaypoint = new THREE.Vector3();
+const tmpDetour = new THREE.Vector3();
 
 function enterReady() {
   state = 'ready';
@@ -387,7 +403,7 @@ function fixedUpdate(dt: number) {
       kidGo(kickSpot(kid.heading, tmpTarget), 2, dt);
       kid.setPose(charging ? 'windup' : 'move');
       kid.setWindup(Math.min(1, input.power));
-      guide.update(stone.position, center, aim, input.power, input.spin, charging);
+      guide.update(stone.position, center, aim, input.power, input.spin, charging, (x, z) => level.groundAt(x, z));
       break;
     }
     case 'kicking':
@@ -594,7 +610,6 @@ function updateHud() {
   if (state !== 'title') traffic.updateWarnings(stone.position.x, stone.position.z);
   // 走行音：見ている場所の近くを車が通るほど大きく
   sfx.setTraffic(Math.max(0.12, 1 - traffic.nearestCar(camFocus.x, camFocus.z) / 18));
-  guide.group.position.y = level.groundAt(stone.position.x, stone.position.z) + 0.01;
 }
 
 function resize() {

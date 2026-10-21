@@ -928,6 +928,44 @@ export class Level {
     return null;
   }
 
+  /** 半径 r の円（子ども）を塀・電柱・自転車などの外へ押し出す */
+  pushOutCircle(p: { x: number; z: number }, r: number) {
+    const push = (cx: number, cz: number, min: number) => {
+      const dx = p.x - cx;
+      const dz = p.z - cz;
+      const d = Math.hypot(dx, dz);
+      if (d >= min || d < 1e-6) return;
+      p.x = cx + (dx / d) * min;
+      p.z = cz + (dz / d) * min;
+    };
+    // 角では2つの塀に挟まれるので、2回まわして落ち着かせる
+    for (let k = 0; k < 2; k++) {
+      for (const w of this.walls) {
+        const sx = w.x2 - w.x1;
+        const sz = w.z2 - w.z1;
+        const l2 = sx * sx + sz * sz;
+        if (l2 < 1e-9) continue;
+        const t = Math.max(0, Math.min(1, ((p.x - w.x1) * sx + (p.z - w.z1) * sz) / l2));
+        push(w.x1 + sx * t, w.z1 + sz * t, r);
+      }
+      for (const pole of this.poles) push(pole.x, pole.z, r + pole.radius);
+      for (const b of this.blocks) push(Math.max(b.x0, Math.min(b.x1, p.x)), Math.max(b.z0, Math.min(b.z1, p.z)), r);
+    }
+  }
+
+  /** 2点の間を塀がさえぎっていないか */
+  clearPath(ax: number, az: number, bx: number, bz: number): boolean {
+    const cross = (ux: number, uz: number, vx: number, vz: number) => ux * vz - uz * vx;
+    for (const w of this.walls) {
+      const d1 = cross(bx - ax, bz - az, w.x1 - ax, w.z1 - az);
+      const d2 = cross(bx - ax, bz - az, w.x2 - ax, w.z2 - az);
+      const d3 = cross(w.x2 - w.x1, w.z2 - w.z1, ax - w.x1, az - w.z1);
+      const d4 = cross(w.x2 - w.x1, w.z2 - w.z1, bx - w.x1, bz - w.z1);
+      if (d1 * d2 < 0 && d3 * d4 < 0) return false;
+    }
+    return true;
+  }
+
   /** 車道の上か */
   carRoadAt(x: number, z: number): CarRoad | null {
     return this.carRoads.find((r) => inRect(r.rect, x, z)) ?? null;
