@@ -73,6 +73,9 @@ class Thumbnailer {
 
 const thumbs = new Thumbnailer();
 
+/** 石の肖像（data URL） */
+export const stoneThumb = (seed: number, level: Level) => thumbs.get(seed, level);
+
 /** コレクション画面を開く */
 export function showCollection(panel: HTMLElement, grid: HTMLElement, level: Level) {
   const list = loadCollection();

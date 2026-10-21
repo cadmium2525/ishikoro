@@ -30,6 +30,11 @@ export class Kid {
   private movedThisFrame = false;
   private windup = 0;
   private kickT = 0;
+  /** 首を軸に頭を傾ける（中の頭の部品は体の座標のまま置く） */
+  private readonly neck = new THREE.Group();
+  private readonly headParts = new THREE.Group();
+  private mood: 'none' | 'look' | 'sad' = 'none';
+  private nod = 0;
 
   constructor(seed: number) {
     const rand = createRng(seed);
@@ -72,24 +77,28 @@ export class Kid {
     if (bottoms === 'skirt') add(this.body, new THREE.CylinderGeometry(0.17, 0.25, 0.24, 8), pants, 0, 0.5, 0);
 
     add(this.body, new THREE.BoxGeometry(0.34, 0.42, 0.2), shirt, 0, 0.76, 0);
-    add(this.body, new THREE.IcosahedronGeometry(0.16, 1), skin, 0, 1.13, 0);
+    this.neck.position.y = 0.97;
+    this.headParts.position.y = -0.97;
+    this.neck.add(this.headParts);
+    this.body.add(this.neck);
+    add(this.headParts, new THREE.IcosahedronGeometry(0.16, 1), skin, 0, 1.13, 0);
 
     // 髪型
-    const cap = add(this.body, new THREE.SphereGeometry(0.168, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), hair, 0, 1.15, 0);
+    const cap = add(this.headParts, new THREE.SphereGeometry(0.168, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), hair, 0, 1.15, 0);
     cap.rotation.x = -0.25;
-    if (hairStyle === 'bob') add(this.body, new THREE.BoxGeometry(0.36, 0.2, 0.26), hair, 0, 1.07, -0.04);
+    if (hairStyle === 'bob') add(this.headParts, new THREE.BoxGeometry(0.36, 0.2, 0.26), hair, 0, 1.07, -0.04);
     if (hairStyle === 'pony') {
-      const tail = add(this.body, new THREE.CylinderGeometry(0.05, 0.03, 0.22, 6), hair, 0, 1.08, -0.18);
+      const tail = add(this.headParts, new THREE.CylinderGeometry(0.05, 0.03, 0.22, 6), hair, 0, 1.08, -0.18);
       tail.rotation.x = 0.5;
     }
-    if (hairStyle === 'twin') for (const sx of [-1, 1]) add(this.body, new THREE.IcosahedronGeometry(0.06, 0), hair, sx * 0.17, 1.06, -0.05);
+    if (hairStyle === 'twin') for (const sx of [-1, 1]) add(this.headParts, new THREE.IcosahedronGeometry(0.06, 0), hair, sx * 0.17, 1.06, -0.05);
 
     // 通学帽（黄色い帽子か紅白帽）
     if (hat) {
       const hatMat = lambert(hat === 'yellow' ? 0xf2c230 : 0xd8433a);
-      add(this.body, new THREE.SphereGeometry(0.175, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.5), hatMat, 0, 1.17, 0);
-      if (hat === 'yellow') add(this.body, new THREE.CylinderGeometry(0.24, 0.24, 0.02, 12), hatMat, 0, 1.17, 0, false);
-      else add(this.body, new THREE.BoxGeometry(0.2, 0.02, 0.1), hatMat, 0, 1.17, 0.17, false);
+      add(this.headParts, new THREE.SphereGeometry(0.175, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.5), hatMat, 0, 1.17, 0);
+      if (hat === 'yellow') add(this.headParts, new THREE.CylinderGeometry(0.24, 0.24, 0.02, 12), hatMat, 0, 1.17, 0, false);
+      else add(this.headParts, new THREE.BoxGeometry(0.2, 0.02, 0.1), hatMat, 0, 1.17, 0.17, false);
     }
 
     // ランドセル（1年生は黄色いカバー）
@@ -111,6 +120,16 @@ export class Kid {
       if (m.geometry) m.geometry.dispose();
       if (m.material) (m.material as THREE.Material).dispose();
     });
+  }
+
+  /** 家に着いたら足元の石を見下ろす（look）、失敗したらうなだれる（sad） */
+  setMood(m: 'none' | 'look' | 'sad') {
+    this.mood = m;
+  }
+
+  /** 今の歩く速さ [m/s]（足音用） */
+  get moveSpeed() {
+    return this.speed;
   }
 
   get position() {
@@ -197,6 +216,15 @@ export class Kid {
     this.hipR.rotation.x = -legR;
     this.armL.rotation.x = -legR * 0.8;
     this.armR.rotation.x = -legL * 0.8;
+    // 気持ち：見下ろす・うなだれる
+    const nodTarget = this.mood === 'look' ? 0.55 : this.mood === 'sad' ? 0.45 : 0;
+    this.nod += (nodTarget - this.nod) * damp(4, dt);
+    this.neck.rotation.x = this.nod;
+    if (this.mood === 'sad' && this.pose === 'move') {
+      this.armL.rotation.x *= 0.3;
+      this.armR.rotation.x *= 0.3;
+      lean -= 0.06;
+    }
     this.body.position.y = bob;
     this.body.rotation.x = lean;
   }

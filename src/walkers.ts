@@ -36,6 +36,8 @@ interface Person {
   wheels: THREE.Object3D[];
   /** 自転車に乗っている（速く、当たり判定も大きい） */
   bike: boolean;
+  /** 自転車のベルをもう鳴らしたか */
+  rang: boolean;
   radius: number;
   dog: Dog | null;
 }
@@ -74,6 +76,9 @@ export class Walkers {
   private readonly rand: () => number;
   private readonly target: number;
   private time = 0;
+  /** 音を鳴らすきっかけ（自転車のベル、ねこの声） */
+  onBell?: () => void;
+  onMeow?: () => void;
 
   constructor(private readonly level: Level) {
     this.rand = createRng(level.seed ^ 0x1b873593);
@@ -183,6 +188,11 @@ export class Walkers {
         p.phase += dt * p.speed * (p.bike ? 2.2 : 5);
       }
       this.placePerson(p, blocked ? 0 : p.speed, dt);
+      // 自転車は子どもに近づくとベルを鳴らす
+      if (p.bike && !p.rang && Math.hypot(p.mesh.position.x - kid.x, p.mesh.position.z - kid.z) < 9 && (kidS - p.s) * p.dir > 0) {
+        p.rang = true;
+        this.onBell?.();
+      }
 
       // 子どもの後ろへ遠く離れた人や、道の端まで行った人は、先の方に入れ替える
       const behind = (stoneS - p.s) > 25 || p.s < 0 || p.s > L.routeLength;
@@ -241,6 +251,7 @@ export class Walkers {
       phase: this.rand() * 6,
       ...buildPerson(this.rand, bike),
       bike,
+      rang: false,
       radius: bike ? 0.42 : 0.26,
       dog: null,
     };
@@ -309,11 +320,13 @@ export class Walkers {
     if (stoneMoving && Math.hypot(stone.x - c.x, stone.z - c.z) < 3 && Math.abs(c.lTarget - c.l) < 0.02 && !c.startled) {
       c.startled = true;
       c.lTarget = c.l > 0 ? -LATERAL : LATERAL;
+      this.onMeow?.();
     }
     if (!stoneMoving) c.startled = false;
     // 子どもが近づくと、道の端へ逃げる
     if (Math.hypot(kx - c.x, kz - c.z) < 1.6 && Math.abs(c.lTarget) < LATERAL) {
       c.lTarget = c.l >= 0 ? LATERAL + 0.3 : -LATERAL - 0.3;
+      this.onMeow?.();
     }
     c.timer -= dt;
     if (c.timer <= 0) {

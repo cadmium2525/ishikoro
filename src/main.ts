@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { buildWorld, disposeWorld, type Occluder } from './world';
 import { Level } from './level';
 import { Stone, stoneName } from './stone';
-import { addToCollection, showCollection } from './collection';
+import { addToCollection, showCollection, stoneThumb } from './collection';
+import type { Ambience } from './audio';
 import { Kid, KICK_OFFSET } from './kid';
 import { KickInputController, OVERCHARGE_MAX, type KickInput } from './input';
 import { AimGuide } from './aimGuide';
@@ -54,6 +55,8 @@ const el = {
   ovBody: document.querySelector<HTMLElement>('#ov-body')!,
   ovAction: document.querySelector<HTMLElement>('#ov-action')!,
   toast: document.querySelector<HTMLElement>('#toast')!,
+  ovStone: document.querySelector<HTMLImageElement>('#ov-stone')!,
+  mute: document.querySelector<HTMLElement>('#mute')!,
   ovCollection: document.querySelector<HTMLElement>('#ov-collection')!,
   collection: document.querySelector<HTMLElement>('#collection')!,
   collectionGrid: document.querySelector<HTMLElement>('#collection-grid')!,
@@ -135,6 +138,8 @@ let camYaw = 0;
 let camDist = 6;
 let camHeight = 5;
 let camLookY = 0.3;
+/** 家に着いたあと、カメラがまわりこむ角度 */
+let clearOrbit = 0;
 /**
  * 車道側の斜め後ろからの視点。歩道の先と、迫ってくる車を同時に見せる。
  * 主人公は左足で蹴るので、カメラ側に体がかぶらない。
@@ -173,9 +178,9 @@ function saveRecords() {
 
 /** その日の空模様。毎回ちがう下校の時間帯になる */
 const SKIES = [
-  { name: 'ひるさがり', sky: 0xf6dcae, sun: 0xffd59a, sunI: 2.2, hemi: 1.4, offset: new THREE.Vector3(-14, 11, -6) },
-  { name: 'ゆうがた', sky: 0xf2b48a, sun: 0xff9a62, sunI: 2.0, hemi: 1.15, offset: new THREE.Vector3(-16, 6.5, -9) },
-  { name: 'くもり', sky: 0xd9d9d2, sun: 0xf4f1ea, sunI: 0.9, hemi: 2.0, offset: new THREE.Vector3(-8, 14, -4) },
+  { name: 'ひるさがり', amb: 'noon', sky: 0xf6dcae, sun: 0xffd59a, sunI: 2.2, hemi: 1.4, hemiSky: 0xfff1d6, hemiGround: 0x8a7a5c, offset: new THREE.Vector3(-14, 11, -6) },
+  { name: 'ゆうがた', amb: 'evening', sky: 0xf2b48a, sun: 0xff9a62, sunI: 2.0, hemi: 1.15, hemiSky: 0xffd2b0, hemiGround: 0x6a5060, offset: new THREE.Vector3(-16, 6.5, -9) },
+  { name: 'くもり', amb: 'cloudy', sky: 0xd9d9d2, sun: 0xf4f1ea, sunI: 0.9, hemi: 2.0, hemiSky: 0xe8eaee, hemiGround: 0x7a7a72, offset: new THREE.Vector3(-8, 14, -4) },
 ];
 let sunOffset = SKIES[0].offset;
 let daySky = SKIES[0].name;
@@ -207,6 +212,8 @@ function setupDay(daySeed: number) {
   scene.add(traffic.group);
   traffic.reset();
   walkers = new Walkers(level);
+  walkers.onBell = () => sfx.bell();
+  walkers.onMeow = () => sfx.meow();
   scene.add(walkers.group);
   walkers.reset(0);
 
@@ -216,8 +223,12 @@ function setupDay(daySeed: number) {
   sun.color.setHex(sky.sun);
   sun.intensity = sky.sunI;
   hemi.intensity = sky.hemi;
+  hemi.color.setHex(sky.hemiSky);
+  hemi.groundColor.setHex(sky.hemiGround);
   sunOffset = sky.offset;
   daySky = sky.name;
+  sfx.setAmbience(sky.amb as Ambience);
+  document.body.dataset.sky = sky.amb;
 
   stoneSeed = (daySeed ^ 0x6a09e667) >>> 0;
   stone = new Stone(stoneSeed, level, { onImpact: (s) => sfx.impact(s) });
@@ -249,6 +260,9 @@ function newRun(fresh: boolean) {
   el.overlay.classList.remove('on');
   el.status.classList.remove('off');
   el.hint.classList.toggle('off', !hintShown);
+  kid.setMood('none');
+  sfx.setAmbienceLevel(1);
+  clearOrbit = 0;
   showToast(`きょうの石：${stoneName(stone.traits)}`);
   enterReady();
 }
@@ -358,6 +372,18 @@ el.ovCollection.addEventListener('pointerdown', (e) => e.stopPropagation());
 el.ovCollection.addEventListener('click', () => showCollection(el.collection, el.collectionGrid, level));
 el.collectionClose.addEventListener('click', () => el.collection.classList.remove('on'));
 
+// 消音ボタン（設定は次に開いたときも残る）
+const syncMute = () => {
+  el.mute.classList.toggle('off', sfx.muted);
+  el.mute.setAttribute('aria-label', sfx.muted ? '音を出す' : '音を消す');
+};
+el.mute.addEventListener('click', () => {
+  sfx.unlock();
+  sfx.setMuted(!sfx.muted);
+  syncMute();
+});
+syncMute();
+
 el.overlay.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   sfx.unlock();
@@ -389,7 +415,9 @@ function checkLost(): boolean {
     if (who) {
       stone.velocity.x *= -0.3;
       stone.velocity.z *= -0.3;
-      sfx.thud();
+      if (who === 'dog') sfx.bark();
+      else if (who === 'cat') sfx.meow();
+      else sfx.thud();
       lose(who);
       return true;
     }
@@ -414,6 +442,10 @@ function lose(reason: LostReason) {
   stateTime = 0;
   input.disable();
   waitingFor = null;
+  // 立ち止まってうなだれる。まわりの音も少し遠のく
+  kid.setMood('sad');
+  sfx.setAmbienceLevel(0.35);
+  sfx.setRolling(0, false);
 }
 
 function fixedUpdate(dt: number) {
@@ -493,7 +525,10 @@ function fixedUpdate(dt: number) {
       const h = level.home;
       const target = tmpTarget.set(stone.position.x - h.nx * 0.45, 0, stone.position.z - h.nz * 0.45);
       const there = kidGo(target, 1.6, dt) === 'arrived';
-      if (there) kid.turnTo(Math.atan2(h.nx, h.nz), dt, 5);
+      if (there) {
+        kid.turnTo(Math.atan2(h.nx, h.nz), dt, 5);
+        kid.setMood('look');
+      }
       if (stateTime > 2.4) showClear();
       break;
     }
@@ -521,6 +556,7 @@ function showClear() {
   recordProgress();
   if (records.bestKicks === null || kicks < records.bestKicks) records.bestKicks = kicks;
   saveRecords();
+  sfx.home();
   const name = stoneName(stone.traits);
   addToCollection({
     seed: stoneSeed,
@@ -531,12 +567,16 @@ function showClear() {
     difficulty: level.difficulty,
   });
   showOverlay('ただいま', `「${name}」を ${kicks} 回で連れて帰った。`, 'タップで次の日へ');
+  // 今日の石の肖像を結果に添える
+  el.ovStone.src = stoneThumb(stoneSeed, level);
+  el.ovStone.classList.add('on');
 }
 
 function showGameOver() {
   state = 'over';
   recordProgress();
   saveRecords();
+  sfx.sad();
   showOverlay('きょうは ここまで', `${LOST_TEXT[lostReason]}<br>${Math.round(bestProgress)} m 進んだ。`, 'タップで次の日へ');
 }
 
@@ -562,6 +602,7 @@ function showOverlay(title: string, body: string, action: string) {
   el.ovTitle.textContent = title;
   el.ovBody.innerHTML = `${body}<br>${recordsLine()}`;
   el.ovAction.textContent = action;
+  el.ovStone.classList.remove('on');
   el.overlay.classList.add('on');
   el.overlay.classList.toggle('title', state === 'title');
 }
@@ -607,7 +648,9 @@ function updateCamera(dt: number) {
     dist = 3.4;
     height = 2.6;
     rate = 1.5;
-    yaw = Math.atan2(h.nx, h.nz) + 0.5;
+    // 家に着いたら、ゆっくりまわりこみながら見下ろす
+    if (state === 'clear') clearOrbit += dt * 0.12;
+    yaw = Math.atan2(h.nx, h.nz) + 0.5 + clearOrbit;
   } else if (waitingFor) {
     // 車道の手前で待っている間は、子どもと石と信号・車を一緒に見せる
     focus = tmpFocus.set((stone.position.x + kid.position.x) / 2, 0, (stone.position.z + kid.position.z) / 2 + 1);
@@ -729,6 +772,34 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+/**
+ * 端末に合わせた画質：重いときは解像度を下げ、それでも重ければ影を切る。
+ * 一度下げたら戻さない（上げ下げを繰り返してちらつかないように）。
+ */
+let perfT = 0;
+let perfFrames = 0;
+function adaptQuality(dt: number) {
+  perfT += dt;
+  perfFrames++;
+  if (perfT < 2.5) return;
+  const fps = perfFrames / perfT;
+  perfT = 0;
+  perfFrames = 0;
+  if (fps >= 45) return;
+  const pr = renderer.getPixelRatio();
+  if (pr > 1.01) {
+    renderer.setPixelRatio(Math.max(1, pr - 0.25));
+    resize();
+  } else if (renderer.shadowMap.enabled && fps < 35) {
+    renderer.shadowMap.enabled = false;
+    sun.castShadow = false;
+    scene.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+      if (m) m.needsUpdate = true;
+    });
+  }
+}
+
 let last = performance.now();
 let acc = 0;
 function frame(now: number) {
@@ -741,6 +812,13 @@ function frame(now: number) {
   }
   updateCamera(dt);
   updateHud();
+  // 音：環境音・石の転がる音・足音
+  sfx.tick(dt);
+  if (state !== 'lost' && state !== 'over') {
+    sfx.setRolling(stone.moving && stone.onGround ? stone.horizontalSpeed : 0, !!level.sidewalkAt(stone.position.x, stone.position.z));
+  }
+  sfx.footsteps(kid.moveSpeed, dt);
+  adaptQuality(dt);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

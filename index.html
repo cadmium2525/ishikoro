@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#f3d9a8" />
+    <meta name="description" content="今日の石を、家まで連れて帰ろう。道ばたの石を蹴って下校する物理アクション。" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon-192.png" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="いしころ" />
     <title>いしころ</title>
     <style>
       :root {
@@ -73,6 +80,34 @@
         transition: opacity 0.5s;
       }
       #toast.on { opacity: 1; }
+
+      /* 画面の縁をやわらかく暗くして、夕方の写真のような温かみを出す */
+      #vignette {
+        position: fixed; inset: 0;
+        pointer-events: none;
+        background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(80, 45, 20, 0.28) 100%);
+      }
+      body[data-sky="evening"] #vignette { background: radial-gradient(ellipse at 50% 40%, rgba(255, 170, 110, 0.06) 40%, rgba(90, 40, 30, 0.36) 100%); }
+      body[data-sky="cloudy"] #vignette { background: radial-gradient(ellipse at 50% 45%, transparent 60%, rgba(60, 60, 70, 0.22) 100%); }
+
+      #mute {
+        position: fixed;
+        z-index: 10;
+        top: calc(max(12px, env(safe-area-inset-top)) + 46px);
+        right: max(12px, env(safe-area-inset-right));
+        width: 34px; height: 34px;
+        border-radius: 50%;
+        border: none;
+        background: var(--paper);
+        color: var(--ink);
+        font-size: 16px;
+        line-height: 34px;
+        padding: 0;
+        cursor: pointer;
+      }
+      #mute.off { opacity: 0.55; text-decoration: line-through; }
+      #ov-stone { display: none; width: 84px; height: 84px; border-radius: 14px; background: #efe2c8; margin: 2px auto 4px; }
+      #ov-stone.on { display: block; }
 
       #power {
         right: max(16px, env(safe-area-inset-right));
@@ -166,6 +201,7 @@
 
       #collection {
         position: fixed; inset: 0;
+        z-index: 20;
         display: none;
         flex-direction: column;
         background: #fff8ec;
@@ -194,6 +230,7 @@
   </head>
   <body>
     <canvas id="game"></canvas>
+    <div id="vignette"></div>
 
     <div id="status" class="hud">
       <span>いえまで <b id="dist">--</b> m</span>
@@ -209,11 +246,14 @@
     <div id="overlay">
       <div class="card">
         <h1 id="ov-title">ただいま</h1>
+        <img id="ov-stone" alt="今日の石" />
         <div id="ov-body"></div>
         <div id="ov-action" class="action"></div>
         <button id="ov-collection" type="button">いしの コレクション</button>
       </div>
     </div>
+
+    <button id="mute" type="button" aria-label="音を消す">♪</button>
 
     <div id="collection">
       <header>
