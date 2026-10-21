@@ -59,6 +59,14 @@ export interface PoleCollider {
   x: number;
   z: number;
   radius: number;
+  /** 電柱か、工事のコーン */
+  kind?: 'pole' | 'cone';
+}
+
+/** 工事中のマンホール：ふたの開いた穴と、まわりのコーン */
+export interface Roadwork {
+  hole: Rect;
+  cones: [number, number][];
 }
 
 /** A：南北の通りの車、B：東西の通りの車 */
@@ -108,10 +116,10 @@ export interface Intersection {
   phase: number;
 }
 
-export type Hazard = 'gutter' | 'grass' | 'grate' | 'water';
+export type Hazard = 'gutter' | 'grass' | 'grate' | 'water' | 'manhole';
 
 export interface LostZone {
-  kind: 'grass' | 'water';
+  kind: 'grass' | 'water' | 'manhole';
   rect: Rect;
 }
 
@@ -249,6 +257,7 @@ export class Level {
   readonly intersections: Intersection[] = [];
   readonly crosswalks: Crosswalk[] = [];
   readonly slopes: Slope[] = [];
+  readonly roadworks: Roadwork[] = [];
   readonly decor: Decor[] = [];
   /** 家を置いてはいけない範囲 */
   readonly reserved: Rect[] = [];
@@ -824,6 +833,8 @@ export class Level {
     const d = this.difficulty;
     const lidRatio = { easy: 0.65, normal: 0.45, hard: 0.25 }[d];
     const onRoute = new Set(edges.filter((e) => e.street.kind === 'lane').map((e) => `${e.street.axis}${e.street.index}:${Math.min(e.from.index, e.to.index)}`));
+    // 工事中のマンホールの数（帰り道の広い路地に）
+    let works = { easy: rand() < 0.5 ? 1 : 0, normal: 1 + (rand() < 0.5 ? 1 : 0), hard: 2 + (rand() < 0.5 ? 1 : 0) }[d];
     for (const s of [...this.streetsV, ...this.streetsH]) {
       if (s.kind !== 'lane') continue;
       const cross = s.axis === 'z' ? this.streetsH : this.streetsV;
@@ -850,8 +861,26 @@ export class Level {
         const ga = s.axis === 'z' ? h.gz : h.gx;
         if (this.nearHome(s, ga) && ga > lo - 2 && ga < hi + 2) lids.push(bandOn(s, edge, edge - side * GUTTER_W, ga - 1.8, ga + 1.8));
         this.gutters.push({ rect: g, lids });
+        // 工事中のマンホール（側溝の反対側）。帰り道の中心から 0.9 m 以上はなす
+        const routeLane = onRoute.has(`${s.axis}${s.index}:${j}`);
+        if (routeLane && works > 0 && s.half >= 1.65 && hi - lo > 10 && rand() < 0.9) {
+          const t = lo + 3 + rand() * (hi - lo - 6);
+          if (!this.nearHome(s, t) && Math.abs(t - (s.axis === 'z' ? h.gz : h.gx)) > 5) {
+            works--;
+            const inner = s.c - side * 0.9;
+            const outer = s.c - side * (s.half - 0.2);
+            const mid = (inner + outer) / 2;
+            const hole = bandOn(s, mid - 0.32, mid + 0.32, t - 0.32, t + 0.32);
+            const cones: [number, number][] = [];
+            for (const b of [inner, outer]) for (const a of [t - 0.7, t + 0.7]) cones.push(pointOn(s, b, a));
+            this.roadworks.push({ hole, cones });
+            this.lostZones.push({ kind: 'manhole', rect: hole });
+            for (const [cx, cz] of cones) this.poles.push({ x: cx, z: cz, radius: 0.14, kind: 'cone' });
+            continue;
+          }
+        }
         // 帰り道の路地には電柱（側溝の反対側）
-        if (onRoute.has(`${s.axis}${s.index}:${j}`) && rand() < 0.7) {
+        if (routeLane && rand() < 0.7) {
           const t = lo + 1 + rand() * (hi - lo - 2);
           if (!this.nearHome(s, t)) {
             const [px, pz] = pointOn(s, s.c - side * (s.half - 0.3), t);

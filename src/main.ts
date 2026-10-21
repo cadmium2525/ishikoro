@@ -7,11 +7,12 @@ import { Kid, KICK_OFFSET } from './kid';
 import { KickInputController, OVERCHARGE_MAX, type KickInput } from './input';
 import { AimGuide } from './aimGuide';
 import { Traffic } from './traffic';
+import { Walkers } from './walkers';
 import { Sfx } from './audio';
 import { clamp, damp, gaussian } from './rng';
 
 type GameState = 'title' | 'ready' | 'kicking' | 'rolling' | 'chasing' | 'arrived' | 'clear' | 'lost' | 'over';
-type LostReason = 'gutter' | 'grass' | 'grate' | 'water' | 'car';
+type LostReason = 'gutter' | 'grass' | 'grate' | 'water' | 'manhole' | 'car' | 'person' | 'dog' | 'cat';
 
 const FIXED_DT = 1 / 120;
 /** 足が石に当たるまでの時間（キックモーションと合わせる） */
@@ -25,6 +26,10 @@ const LOST_TEXT: Record<LostReason, string> = {
   grass: '石が草むらに消えてしまった。',
   grate: '石が集水ますの格子にはまってしまった。',
   water: '石が田んぼに落ちてしまった。',
+  manhole: '石が工事中のマンホールに落ちてしまった。',
+  person: '石が通りがかりの人に当たってしまった。',
+  dog: '石が散歩中の犬に当たってしまった。',
+  cat: '石がねこに当たってしまった。',
   car: '石が車にはじかれてしまった。',
 };
 
@@ -94,6 +99,8 @@ scene.add(sun, sun.target);
 let level!: Level;
 let worldGroup: THREE.Group | null = null;
 let traffic!: Traffic;
+/** 通行人・散歩の犬・ねこ */
+let walkers!: Walkers;
 
 const guide = new AimGuide();
 scene.add(guide.group);
@@ -183,12 +190,19 @@ function setupDay(daySeed: number) {
     scene.remove(traffic.group);
     traffic.dispose();
   }
+  if (walkers) {
+    scene.remove(walkers.group);
+    walkers.dispose();
+  }
   level = new Level(daySeed);
   worldGroup = buildWorld(level);
   scene.add(worldGroup);
   traffic = new Traffic(level);
   scene.add(traffic.group);
   traffic.reset();
+  walkers = new Walkers(level);
+  scene.add(walkers.group);
+  walkers.reset(0);
 
   const sky = SKIES[Math.abs(daySeed) % SKIES.length];
   skyColor.setHex(sky.sky);
@@ -357,6 +371,17 @@ function checkLost(): boolean {
     lose('car');
     return true;
   }
+  // 通行人・犬・ねこに当たったら跳ね返って、その日はおしまい
+  if (stone.moving && stone.horizontalSpeed > 0.25) {
+    const who = walkers.hitTest(p.x, p.z, p.y, stone.traits.radius);
+    if (who) {
+      stone.velocity.x *= -0.3;
+      stone.velocity.z *= -0.3;
+      sfx.thud();
+      lose(who);
+      return true;
+    }
+  }
   if (!stone.onGround) return false;
   const h = level.hazardAt(p.x, p.z);
   if (!h) return false;
@@ -382,7 +407,9 @@ function lose(reason: LostReason) {
 function fixedUpdate(dt: number) {
   stateTime += dt;
   input.update(dt);
-  traffic.update(dt, state === 'title' ? null : kid.position);
+  const peds = walkers.pedestrians;
+  traffic.update(dt, state === 'title' ? peds : [kid.position, ...peds]);
+  if (state !== 'over' && state !== 'clear') walkers.update(dt, stone.position, stone.moving, kid.position, traffic);
 
   if (state !== 'title' && state !== 'lost' && state !== 'over' && state !== 'clear') {
     stone.step(dt, traffic.obstacles);
@@ -707,6 +734,7 @@ Object.assign(window, {
     /** 指定した種で新しい一日を始める（自動テスト用） */
     day(seed: number) { setupDay(seed); newRun(false); },
     get traffic() { return traffic; },
+    get walkers() { return walkers; },
     input,
     /** 石が止まった直後の状態にする（自動テスト用） */
     chase() { input.disable(); state = 'chasing'; stateTime = 0; },

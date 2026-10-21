@@ -142,7 +142,7 @@ export class Traffic {
     for (const c of this.cars) this.group.remove(c.mesh);
     this.cars = [];
     this.timers.clear();
-    for (let i = 0; i < 400; i++) this.update(0.1, null);
+    for (let i = 0; i < 400; i++) this.update(0.1, []);
   }
 
   /** 使い終わった車や信号の形状を片付ける */
@@ -155,7 +155,8 @@ export class Traffic {
     });
   }
 
-  update(dt: number, kid: { x: number; z: number } | null) {
+  /** people：車が止まる相手（子ども・通行人・犬）。石には気づかない */
+  update(dt: number, people: readonly { x: number; z: number }[]) {
     this.time += dt;
     for (const s of this.signals) s.update(dt);
 
@@ -191,8 +192,9 @@ export class Traffic {
         const canStop = d > (car.speed * car.speed) / (2 * BRAKE) - 0.5;
         if (d > -0.5 && (light === 'red' || canStop)) gap = Math.min(gap, d);
       }
-      // 車線にいる子ども（石には気づかない）
-      if (kid && Math.abs(across(lane, kid.x, kid.z) - lane.c) < LANE_BAND) {
+      // 車線にいる子どもや通行人（石には気づかない）
+      for (const kid of people) {
+        if (Math.abs(across(lane, kid.x, kid.z) - lane.c) >= LANE_BAND) continue;
         const d = (along(lane, kid.x, kid.z) - car.front) * dir;
         if (d > -0.8 && d < 18) gap = Math.min(gap, d - KID_STOP_GAP);
       }

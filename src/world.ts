@@ -109,6 +109,7 @@ export function buildWorld(level: Level): THREE.Group {
   buildHouses(b, level, rand);
   buildHome(b, level);
   buildPoles(b, level);
+  buildRoadworks(b, level);
 
   b.build(group);
   group.userData.occluders = occluders;
@@ -532,12 +533,56 @@ function buildHome(b: Batcher, level: Level) {
 
 function buildPoles(b: Batcher, level: Level) {
   for (const p of level.poles) {
+    if (p.kind === 'cone') continue;
     // 腕木は通りを横切る向き
     const area = level.lanes.find((r) => inside(r, p.x, p.z)) ?? level.sidewalks.find((r) => inside(r, p.x, p.z));
     const alongZ = area ? area.z1 - area.z0 > area.x1 - area.x0 : true;
     const base = level.terrainAt(p.x, p.z);
     b.add(new THREE.CylinderGeometry(0.12, 0.16, 8, 8), 0x8e8a84, new THREE.Matrix4().setPosition(p.x, base + 4, p.z));
     b.box(1.4, 0.08, 0.08, 0x8e8a84, p.x, base + 7.4, p.z, alongZ ? 0 : Math.PI / 2);
+  }
+}
+
+/** 工事中のマンホール：開いた穴、外したふた、コーンと黄色と黒のバー */
+function buildRoadworks(b: Batcher, level: Level) {
+  const cone = new THREE.ConeGeometry(0.14, 0.55, 8);
+  const stripe = new THREE.CylinderGeometry(0.105, 0.12, 0.1, 8);
+  const hole = new THREE.CircleGeometry(0.32, 14);
+  hole.rotateX(-Math.PI / 2);
+  const rim = new THREE.RingGeometry(0.32, 0.4, 14);
+  rim.rotateX(-Math.PI / 2);
+  const lid = new THREE.CylinderGeometry(0.34, 0.34, 0.04, 14);
+  for (const w of level.roadworks) {
+    const cx = (w.hole.x0 + w.hole.x1) / 2;
+    const cz = (w.hole.z0 + w.hole.z1) / 2;
+    const y = level.terrainAt(cx, cz);
+    b.add(hole, 0x151515, new THREE.Matrix4().setPosition(cx, y + 0.006, cz), false);
+    b.add(rim, 0x5d5a55, new THREE.Matrix4().setPosition(cx, y + 0.007, cz), false);
+    // ふたは穴の横に立てかけずに置いてある
+    b.add(lid, 0x4a4844, new THREE.Matrix4().setPosition(cx + 0.25, y + 0.02, cz + 0.45), false);
+    for (const [x, z] of w.cones) {
+      const cy = level.terrainAt(x, z);
+      b.add(cone, 0xe8622c, new THREE.Matrix4().setPosition(x, cy + 0.275, z));
+      b.add(stripe, 0xf4f1ea, new THREE.Matrix4().setPosition(x, cy + 0.3, z), false);
+    }
+    // コーンの間にバー（石はバーの下をくぐれる）
+    const [a, c2, d, e] = w.cones;
+    for (const [p, q] of [[a, c2], [d, e], [a, d], [c2, e]] as const) {
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      const rot = Math.atan2(q[0] - p[0], q[1] - p[1]);
+      const mx = (p[0] + q[0]) / 2;
+      const mz = (p[1] + q[1]) / 2;
+      const my = level.terrainAt(mx, mz) + 0.5;
+      const n = Math.max(2, Math.round(len / 0.25));
+      for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n - 0.5;
+        b.box(0.04, 0.06, len / n, i % 2 ? 0x222222 : 0xf2c230, mx + Math.sin(rot) * t * len, my, mz + Math.cos(rot) * t * len, rot, false);
+      }
+    }
+    // 工事中の立て看板
+    const [sx, sz] = w.cones[1];
+    b.box(0.05, 0.6, 0.45, 0xf4f1ea, sx, level.terrainAt(sx, sz) + 0.85, sz);
+    b.box(0.06, 0.18, 0.4, 0xd8433a, sx, level.terrainAt(sx, sz) + 1.0, sz, 0, false);
   }
 }
 
