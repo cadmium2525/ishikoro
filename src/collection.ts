@@ -1,11 +1,13 @@
 import * as THREE from 'three';
-import { Stone } from './stone';
+import { STONE_KINDS, Stone, describeStone } from './stone';
 import type { Level } from './level';
 
 /** 持ち帰った石の記録 */
 export interface CollectedStone {
   seed: number;
   name: string;
+  /** 石の種類（古い記録にはない） */
+  kind?: string;
   /** 持ち帰った日（ISO 形式の日付） */
   date: string;
   kicks: number;
@@ -60,6 +62,8 @@ class Thumbnailer {
     }
     const stone = new Stone(seed, level);
     stone.mesh.position.set(0, 0, 0);
+    // 寝かせた石を少しこちらへ傾けて、形と模様が見えるように
+    stone.mesh.rotation.x += 0.7;
     // 大きさの違いがわかるよう、カメラは固定
     this.scene.add(stone.mesh);
     this.renderer.render(this.scene, this.camera);
@@ -80,28 +84,37 @@ export const stoneThumb = (seed: number, level: Level) => thumbs.get(seed, level
 export function showCollection(panel: HTMLElement, grid: HTMLElement, level: Level) {
   const list = loadCollection();
   grid.textContent = '';
+  // 名前・種類は種から決まる。古い記録も今の石の姿にそろえる
+  const described = list.map((s) => describeStone(s.seed));
+  const found = new Set(described.map((d) => d.kind.id));
+  const count = document.createElement('p');
+  count.className = 'kinds';
+  count.textContent = `見つけた種類 ${found.size} / ${STONE_KINDS.length}`;
+  grid.appendChild(count);
   if (list.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'empty';
     empty.textContent = 'まだ石を持ち帰っていない。';
     grid.appendChild(empty);
   }
-  for (const s of list) {
+  list.forEach((s, i) => {
+    const d = described[i];
     const card = document.createElement('div');
     card.className = 'stone-card';
     const img = document.createElement('img');
-    img.alt = s.name;
+    img.alt = d.name;
     img.src = thumbs.get(s.seed, level);
     const name = document.createElement('div');
     name.className = 'stone-name';
-    name.textContent = s.name;
+    name.textContent = d.kind.rare ? `★ ${d.name}` : d.name;
+    if (d.kind.rare) card.classList.add('rare');
     const meta = document.createElement('div');
     meta.className = 'stone-meta';
-    const d = new Date(s.date);
-    meta.textContent = `${d.getMonth() + 1}/${d.getDate()}・${s.kicks}回・${s.distance}m`;
+    const day = new Date(s.date);
+    meta.textContent = `${day.getMonth() + 1}/${day.getDate()}・${s.kicks}回・${s.distance}m`;
     card.append(img, name, meta);
     grid.appendChild(card);
-  }
+  });
   panel.classList.add('on');
 }
 

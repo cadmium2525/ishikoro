@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { buildWorld, disposeWorld, type Occluder } from './world';
 import { Level } from './level';
-import { Stone, stoneName } from './stone';
+import { Stone } from './stone';
 import { addToCollection, showCollection, stoneThumb } from './collection';
 import type { Ambience } from './audio';
 import { Kid, KICK_OFFSET } from './kid';
@@ -264,7 +264,7 @@ function newRun(fresh: boolean) {
   kid.setMood('none');
   sfx.setAmbienceLevel(1);
   clearOrbit = 0;
-  showToast(`きょうの石：${stoneName(stone.traits)}`);
+  showToast(stone.kind.rare ? `めずらしい！ きょうの石：${stone.name}` : `きょうの石：${stone.name}`);
   enterReady();
 }
 
@@ -560,10 +560,11 @@ function showClear() {
   if (records.bestKicks === null || kicks < records.bestKicks) records.bestKicks = kicks;
   saveRecords();
   sfx.home();
-  const name = stoneName(stone.traits);
+  const name = stone.name;
   addToCollection({
     seed: stoneSeed,
     name,
+    kind: stone.kind.id,
     date: new Date().toISOString(),
     kicks,
     distance: Math.round(level.routeLength),

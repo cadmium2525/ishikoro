@@ -20,35 +20,120 @@ export interface StoneTraits {
   eccentricity: number;
 }
 
-export function randomTraits(rand: () => number): StoneTraits {
-  const roundness = 0.25 + rand() * 0.7;
+type Range = [number, number];
+type Shape = 'rock' | 'smooth' | 'flat' | 'gravel' | 'brick' | 'heart' | 'crystal' | 'disc';
+type Pattern = 'plain' | 'speckle' | 'band' | 'spiral' | 'pores';
+
+/** 石の種類。見た目（形・色・模様）と性格の幅を決める */
+export interface StoneKind {
+  id: string;
+  /** 呼び名の名詞部分 */
+  noun: string;
+  /** 出やすさ（相対値） */
+  weight: number;
+  rare: boolean;
+  radius: Range;
+  mass: Range;
+  roundness: Range;
+  grip: Range;
+  restitution: Range;
+  /** 偏心 = (1 - roundness) × この幅 */
+  ecc: Range;
+  shape: Shape;
+  colors: number[];
+  pattern: Pattern;
+  /** 模様の色 */
+  accent?: number[];
+  glow?: number;
+}
+
+const kind = (k: Omit<StoneKind, 'rare' | 'pattern'> & Partial<Pick<StoneKind, 'rare' | 'pattern'>>): StoneKind =>
+  ({ rare: false, pattern: 'plain', ...k });
+
+export const STONE_KINDS: StoneKind[] = [
+  // ふつうの石：これまでの石。性格の幅がいちばん広い
+  kind({ id: 'plain', noun: 'いし', weight: 30, radius: [0.09, 0.14], mass: [0.75, 1.3], roundness: [0.25, 0.95], grip: [0.5, 1], restitution: [0.3, 0.6], ecc: [0.4, 1], shape: 'rock', colors: [0x9c9286, 0x8b8a86, 0xa89a84, 0x7f7a74, 0xb3a996, 0x8f8070] }),
+  // 川原の石：つるんと丸く、よく転がる
+  kind({ id: 'river', noun: 'かわらいし', weight: 14, radius: [0.09, 0.13], mass: [0.85, 1.2], roundness: [0.85, 0.97], grip: [0.4, 0.7], restitution: [0.3, 0.45], ecc: [0.2, 0.5], shape: 'smooth', colors: [0xa7a39b, 0x8e8c88, 0xb5aa98, 0x9a948a] }),
+  // 平たい石：ぺったんこで、ふらつきながらすぐ止まる
+  kind({ id: 'flat', noun: 'ひらたい いし', weight: 12, radius: [0.1, 0.14], mass: [0.8, 1.15], roundness: [0.2, 0.35], grip: [0.6, 1], restitution: [0.2, 0.35], ecc: [0.6, 1], shape: 'flat', colors: [0x8f8b84, 0x9d9488, 0x7d7a76] }),
+  // 砕石：角ばっていて、跳ね方が読めない
+  kind({ id: 'gravel', noun: 'とがった じゃり', weight: 12, radius: [0.08, 0.11], mass: [0.75, 1.0], roundness: [0.2, 0.4], grip: [0.6, 1], restitution: [0.5, 0.65], ecc: [0.6, 1], shape: 'gravel', colors: [0x8a8784, 0x9b958c, 0x76736f] }),
+  kind({ id: 'white', noun: 'しろい いし', weight: 8, radius: [0.09, 0.13], mass: [0.8, 1.15], roundness: [0.5, 0.9], grip: [0.5, 0.9], restitution: [0.35, 0.55], ecc: [0.3, 0.8], shape: 'rock', colors: [0xeeeae2, 0xe6e1d6, 0xf3efe8] }),
+  // 黒い石：ずっしり重く、回転が効きにくくまっすぐ転がる
+  kind({ id: 'black', noun: 'くろい いし', weight: 8, radius: [0.1, 0.13], mass: [1.2, 1.45], roundness: [0.6, 0.9], grip: [0.3, 0.5], restitution: [0.25, 0.4], ecc: [0.1, 0.4], shape: 'rock', colors: [0x3d3b3a, 0x46423f, 0x34322f] }),
+  kind({ id: 'speckle', noun: 'ごましお いし', weight: 7, radius: [0.09, 0.13], mass: [0.9, 1.25], roundness: [0.45, 0.85], grip: [0.5, 0.9], restitution: [0.3, 0.55], ecc: [0.3, 0.8], shape: 'rock', pattern: 'speckle', colors: [0xc9c4ba, 0xd1cabd], accent: [0x2e2c2a, 0xf7f4ee] }),
+  kind({ id: 'band', noun: 'しまもよう いし', weight: 6, radius: [0.09, 0.13], mass: [0.85, 1.2], roundness: [0.55, 0.9], grip: [0.5, 0.9], restitution: [0.3, 0.5], ecc: [0.3, 0.8], shape: 'smooth', pattern: 'band', colors: [0x6f6862, 0x7d6a5a, 0x5e6266], accent: [0xf1ece2] }),
+  // 軽石：かるくて、蹴るとよく飛ぶ
+  kind({ id: 'pumice', noun: 'かるいし', weight: 5, radius: [0.1, 0.14], mass: [0.5, 0.62], roundness: [0.4, 0.75], grip: [0.7, 1], restitution: [0.45, 0.6], ecc: [0.3, 0.7], shape: 'rock', pattern: 'pores', colors: [0xd9d2c3, 0xcfc8b8, 0xe2dccd], accent: [0x9b9282] }),
+  // レンガのかけら：角があってごろんごろん転がる
+  kind({ id: 'brick', noun: 'レンガの かけら', weight: 5, radius: [0.09, 0.12], mass: [0.9, 1.15], roundness: [0.15, 0.3], grip: [0.6, 1], restitution: [0.25, 0.4], ecc: [0.4, 0.8], shape: 'brick', colors: [0xa4553a, 0xb4623f, 0x93492f] }),
+  // ここから めずらしい石
+  kind({ id: 'heart', noun: 'ハートの いし', weight: 1.2, rare: true, radius: [0.1, 0.13], mass: [0.85, 1.1], roundness: [0.3, 0.5], grip: [0.6, 0.9], restitution: [0.3, 0.45], ecc: [0.5, 0.9], shape: 'heart', colors: [0xc49a8e, 0xb7a294, 0xd0a79b] }),
+  kind({ id: 'fossil', noun: 'アンモナイトの かせき', weight: 1, rare: true, radius: [0.11, 0.14], mass: [1.0, 1.3], roundness: [0.35, 0.55], grip: [0.6, 0.9], restitution: [0.25, 0.4], ecc: [0.3, 0.6], shape: 'disc', pattern: 'spiral', colors: [0xc2a77c, 0xb89c72], accent: [0x3f2f1c] }),
+  // 水晶：つるつるで回転が効かず、すべるように転がる
+  kind({ id: 'crystal', noun: 'すいしょう', weight: 0.8, rare: true, radius: [0.09, 0.12], mass: [0.8, 1.0], roundness: [0.7, 0.85], grip: [0.2, 0.35], restitution: [0.4, 0.55], ecc: [0.2, 0.5], shape: 'crystal', colors: [0xe9e4f5, 0xdcd0f0, 0xf2eef8] }),
+  kind({ id: 'glow', noun: 'ひかる いし', weight: 0.5, rare: true, radius: [0.09, 0.12], mass: [0.8, 1.1], roundness: [0.6, 0.9], grip: [0.5, 0.9], restitution: [0.35, 0.55], ecc: [0.2, 0.6], shape: 'smooth', colors: [0xbfe6d0, 0xc9e8f2], glow: 0x5fd6b0 }),
+];
+
+export const stoneKindById = (id: string) => STONE_KINDS.find((k) => k.id === id) ?? STONE_KINDS[0];
+
+const pick = (rand: () => number, [a, b]: Range) => a + rand() * (b - a);
+
+function pickKind(rand: () => number): StoneKind {
+  const total = STONE_KINDS.reduce((s, k) => s + k.weight, 0);
+  let x = rand() * total;
+  for (const k of STONE_KINDS) {
+    x -= k.weight;
+    if (x < 0) return k;
+  }
+  return STONE_KINDS[0];
+}
+
+function rollTraits(k: StoneKind, rand: () => number): StoneTraits {
+  const roundness = pick(rand, k.roundness);
   return {
-    radius: 0.09 + rand() * 0.05,
-    mass: 0.75 + rand() * 0.55,
+    radius: pick(rand, k.radius),
+    mass: pick(rand, k.mass),
     roundness,
-    grip: 0.5 + rand() * 0.5,
-    restitution: 0.3 + rand() * 0.3,
-    eccentricity: (1 - roundness) * (0.4 + rand() * 0.6),
+    grip: pick(rand, k.grip),
+    restitution: pick(rand, k.restitution),
+    eccentricity: (1 - roundness) * pick(rand, k.ecc),
   };
 }
 
 /** 石の性格から呼び名をつける（数値を見せずに個性を伝える） */
-export function stoneName(t: StoneTraits): string {
+export function stoneName(k: StoneKind, t: StoneTraits): string {
   const words: string[] = [];
   if (t.radius > 0.125) words.push('おおきな');
   else if (t.radius < 0.1) words.push('ちいさな');
-  if (t.mass > 1.15) words.push('おもたい');
-  else if (t.mass < 0.85) words.push('かるい');
-  const noun =
-    t.roundness > 0.82 ? 'まるいし'
-      : t.eccentricity > 0.45 ? 'いびつな いし'
-        : t.roundness < 0.4 ? 'ごつごつ いし'
-          : t.restitution > 0.52 ? 'よくはねる いし'
-            : 'いし';
-  // 形容がなければ色で呼ぶ
-  if (words.length === 0 && noun === 'いし') words.push('みちばたの');
+  // 軽石・黒い石は名前が重さを語る
+  if (k.id !== 'pumice' && k.id !== 'black') {
+    if (t.mass > 1.15) words.push('おもたい');
+    else if (t.mass < 0.85) words.push('かるい');
+  }
+  let noun = k.noun;
+  if (k.id === 'plain') {
+    noun =
+      t.roundness > 0.82 ? 'まるいし'
+        : t.eccentricity > 0.45 ? 'いびつな いし'
+          : t.roundness < 0.4 ? 'ごつごつ いし'
+            : t.restitution > 0.52 ? 'よくはねる いし'
+              : 'いし';
+    if (words.length === 0 && noun === 'いし') words.push('みちばたの');
+  }
   return [...words, noun].join(' ');
 }
+
+/** 種と性格。乱数列を消費するので、見た目づくりはこの続きで行う */
+function rollStone(rand: () => number) {
+  const k = pickKind(rand);
+  const traits = rollTraits(k, rand);
+  return { kind: k, traits, name: stoneName(k, traits) };
+}
+
+/** 種（seed）から石の種類と名前だけを知る（描画しない） */
+export const describeStone = (seed: number) => rollStone(createRng(seed));
 
 export interface StoneEvents {
   /** 塀・電柱・地面にぶつかった。strength は 0..1 程度 */
@@ -58,6 +143,8 @@ export interface StoneEvents {
 export class Stone {
   readonly mesh: THREE.Mesh;
   readonly traits: StoneTraits;
+  readonly kind: StoneKind;
+  readonly name: string;
   readonly position = new THREE.Vector3();
   readonly velocity = new THREE.Vector3();
   spin = 0;
@@ -71,6 +158,8 @@ export class Stone {
   private readonly tmpAxis = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly lostTarget = new THREE.Vector3();
+  /** 接地表示用の頂点（ローカル座標） */
+  private readonly hull: Float32Array;
 
   constructor(
     seed: number,
@@ -78,11 +167,18 @@ export class Stone {
     private readonly events: StoneEvents = {},
   ) {
     const rand = createRng(seed);
-    this.traits = randomTraits(rand);
+    const rolled = rollStone(rand);
+    this.kind = rolled.kind;
+    this.traits = rolled.traits;
+    this.name = rolled.name;
     this.wobbleOffset = rand() * Math.PI * 2;
-    this.mesh = new THREE.Mesh(makeStoneGeometry(this.traits, rand), new THREE.MeshLambertMaterial({ color: stoneColor(rand), flatShading: true }));
+    const geo = makeStoneGeometry(this.kind, this.traits, rand);
+    paintStone(geo, this.kind, rand);
+    this.hull = (geo.attributes.position as THREE.BufferAttribute).array as Float32Array;
+    this.mesh = new THREE.Mesh(geo, makeStoneMaterial(this.kind));
     this.mesh.castShadow = true;
-    this.mesh.rotation.set(rand() * 6, rand() * 6, rand() * 6);
+    // 道ばたの石は平たい面を下にして落ちている
+    this.mesh.rotation.set((rand() - 0.5) * 0.3, rand() * 6, (rand() - 0.5) * 0.3);
   }
 
   dispose() {
@@ -134,7 +230,10 @@ export class Stone {
       this.updateLost(dt);
       return;
     }
-    if (!this.moving) return;
+    if (!this.moving) {
+      this.settle(dt);
+      return;
+    }
     // 速いときは分割して塀のすり抜けを防ぐ
     const travel = Math.hypot(this.velocity.x, this.velocity.y, this.velocity.z) * dt;
     const n = Math.min(8, Math.max(1, Math.ceil(travel / (this.traits.radius * 0.5))));
@@ -233,6 +332,20 @@ export class Stone {
     } else {
       this.stillTime = 0;
     }
+  }
+
+  /** 止まったら、いちばん薄い向き（ローカル y）を上下にそろえて寝かせる */
+  private settle(dt: number) {
+    const up = this.tmpAxis.set(0, 1, 0).applyQuaternion(this.mesh.quaternion);
+    const c = Math.abs(up.y);
+    if (c > 0.999) return;
+    const angle = Math.acos(c);
+    // up → ±Y への回転軸 = up × (±Y)
+    const sgn = up.y >= 0 ? 1 : -1;
+    this.tmpAxis.set(-up.z * sgn, 0, up.x * sgn).normalize();
+    this.tmpQuat.setFromAxisAngle(this.tmpAxis, Math.min(angle, dt * 5));
+    this.mesh.quaternion.premultiply(this.tmpQuat);
+    this.syncMesh();
   }
 
   /** 見た目の転がり */
@@ -373,41 +486,170 @@ export class Stone {
   }
 
   private syncMesh() {
-    // いびつな石ほど転がりながらコトコト上下する
-    const bob = this.moving ? this.traits.eccentricity * 0.025 * Math.abs(Math.sin(this.rollPhase)) : 0;
-    this.mesh.position.set(this.position.x, this.position.y + bob, this.position.z);
+    // 物理は球で計算するが、表示は形の一番低い点が地面に触れるように下ろす。
+    // いびつな石は転がるたびに自然とコトコト上下する
+    const q = this.mesh.quaternion;
+    const h = this.hull;
+    // 回転後の y = 2(xy+wz)·x + (1-2(xx+zz))·y + 2(yz-wx)·z
+    const ax = 2 * (q.x * q.y + q.w * q.z);
+    const ay = 1 - 2 * (q.x * q.x + q.z * q.z);
+    const az = 2 * (q.y * q.z - q.w * q.x);
+    let minY = 0;
+    for (let i = 0; i < h.length; i += 3) {
+      const y = ax * h[i] + ay * h[i + 1] + az * h[i + 2];
+      if (y < minY) minY = y;
+    }
+    this.mesh.position.set(this.position.x, this.position.y - this.traits.radius - minY, this.position.z);
   }
 }
 
-function makeStoneGeometry(t: StoneTraits, rand: () => number): THREE.BufferGeometry {
-  let geo: THREE.BufferGeometry = new THREE.IcosahedronGeometry(1, 1);
-  geo.deleteAttribute('normal');
-  geo.deleteAttribute('uv');
-  geo = mergeVertices(geo);
+/** 形ごとの土台。半径 1 前後の大きさで作り、最後に radius 倍する */
+function baseGeometry(k: StoneKind, t: StoneTraits, rand: () => number): THREE.BufferGeometry {
+  switch (k.shape) {
+    case 'brick': {
+      const g = new THREE.BoxGeometry(1.6, 0.85, 1.05, 2, 1, 1);
+      // 割れた角を少し欠く
+      return jitter(g, rand, 0.07, 1, 1, 1);
+    }
+    case 'heart': {
+      const s = new THREE.Shape();
+      s.moveTo(0, -0.95);
+      s.bezierCurveTo(-0.35, -0.6, -1.0, -0.25, -0.95, 0.25);
+      s.bezierCurveTo(-0.9, 0.8, -0.25, 0.85, 0, 0.45);
+      s.bezierCurveTo(0.25, 0.85, 0.9, 0.8, 0.95, 0.25);
+      s.bezierCurveTo(1.0, -0.25, 0.35, -0.6, 0, -0.95);
+      const g = new THREE.ExtrudeGeometry(s, { depth: 0.35, bevelEnabled: true, bevelThickness: 0.14, bevelSize: 0.12, bevelSegments: 2, curveSegments: 7 });
+      g.center();
+      g.rotateX(-Math.PI / 2);
+      return jitter(g, rand, 0.025, 1, 1, 1);
+    }
+    case 'crystal': {
+      // 六角柱の両端がとがった結晶
+      const pts = [new THREE.Vector2(0, -1.05), new THREE.Vector2(0.36, -0.6), new THREE.Vector2(0.36, 0.6), new THREE.Vector2(0, 1.05)];
+      const g = new THREE.LatheGeometry(pts, 6);
+      g.rotateZ(Math.PI / 2);
+      return jitter(g, rand, 0.03, 1, 1, 1);
+    }
+    case 'smooth':
+      return jitter(new THREE.IcosahedronGeometry(1, 2), rand, 0.025, 1.12, 0.78, 1);
+    case 'flat':
+      return jitter(new THREE.IcosahedronGeometry(1, 1), rand, 0.06, 1.12, 0.42, 1);
+    case 'disc':
+      return jitter(new THREE.IcosahedronGeometry(1, 3), rand, 0.01, 1, 0.5, 1);
+    case 'gravel':
+      return jitter(new THREE.IcosahedronGeometry(1, 0), rand, 0.28, 1.15, 0.85, 1);
+    case 'rock': {
+      // 丸くない石ほど扁平・細長く、表面の凸凹も大きい
+      const detail = k.pattern === 'plain' ? 1 : 2;
+      const flat = 1 - (1 - t.roundness) * 0.45;
+      const long = 1 + (1 - t.roundness) * 0.35;
+      const bumps = 0.04 + (1 - t.roundness) * 0.14;
+      return jitter(new THREE.IcosahedronGeometry(1, detail), rand, bumps, long, flat, 1);
+    }
+  }
+}
 
-  // 丸くない石ほど扁平・細長く、表面の凸凹も大きい
-  const flat = 1 - (1 - t.roundness) * 0.45;
-  const long = 1 + (1 - t.roundness) * 0.35;
-  const bumps = 0.04 + (1 - t.roundness) * 0.14;
+/** 頂点を共有させてから凸凹を付け、軸ごとに伸び縮みさせる */
+function jitter(g: THREE.BufferGeometry, rand: () => number, bumps: number, sx: number, sy: number, sz: number) {
+  g.deleteAttribute('normal');
+  g.deleteAttribute('uv');
+  const geo = mergeVertices(g);
+  g.dispose();
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i);
-    const n = 1 + (rand() * 2 - 1) * bumps;
-    v.multiplyScalar(n);
-    v.set(v.x * long, v.y * flat, v.z);
-    // 偏心：片側だけ少し膨らませる
-    if (v.x > 0) v.x *= 1 + t.eccentricity * 0.25;
-    pos.setXYZ(i, v.x, v.y, v.z);
+    v.multiplyScalar(1 + (rand() * 2 - 1) * bumps);
+    pos.setXYZ(i, v.x * sx, v.y * sy, v.z * sz);
+  }
+  return geo;
+}
+
+function makeStoneGeometry(k: StoneKind, t: StoneTraits, rand: () => number): THREE.BufferGeometry {
+  const geo = baseGeometry(k, t, rand);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  // 偏心：片側だけ少し膨らませる
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    if (x > 0) pos.setX(i, x * (1 + t.eccentricity * 0.25));
   }
   geo.scale(t.radius, t.radius, t.radius);
   geo.computeVertexNormals();
   return geo;
 }
 
-function stoneColor(rand: () => number): THREE.Color {
-  const palettes = [0x9c9286, 0x8b8a86, 0xa89a84, 0x7f7a74, 0xb3a996, 0x8f8070];
-  const c = new THREE.Color(palettes[Math.floor(rand() * palettes.length)]);
-  c.offsetHSL(0, 0, (rand() - 0.5) * 0.08);
-  return c;
+/** 頂点色で色むらと模様を描く */
+function paintStone(geo: THREE.BufferGeometry, k: StoneKind, rand: () => number) {
+  const base = new THREE.Color(k.colors[Math.floor(rand() * k.colors.length)]);
+  base.offsetHSL(0, 0, (rand() - 0.5) * 0.08);
+  const accent = k.accent?.map((c) => new THREE.Color(c)) ?? [];
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  const v = new THREE.Vector3();
+  geo.computeBoundingSphere();
+  const R = geo.boundingSphere!.radius;
+  const axis = new THREE.Vector3(rand() - 0.5, rand() * 0.4, rand() - 0.5).normalize();
+  const bandFreq = 9 + rand() * 6;
+  const bandPhase = rand() * 6;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).divideScalar(R);
+    c.copy(base).offsetHSL(0, 0, (rand() - 0.5) * 0.06);
+    switch (k.pattern) {
+      case 'speckle': {
+        const r = rand();
+        if (r < 0.16) c.copy(accent[0]);
+        else if (r < 0.26) c.copy(accent[1]);
+        break;
+      }
+      case 'pores':
+        if (rand() < 0.3) c.lerp(accent[0], 0.6);
+        break;
+      case 'band': {
+        // 石英の白い筋が1〜2本走る
+        const b = Math.sin(v.dot(axis) * bandFreq + bandPhase);
+        if (b > 0.82) c.copy(accent[0]).offsetHSL(0, 0, (rand() - 0.5) * 0.04);
+        break;
+      }
+      case 'spiral': {
+        // 上下の面にだけ、巻きと肋（ろく）を彫る
+        const rr = Math.hypot(v.x, v.z);
+        if (Math.abs(v.y) > 0.12 && rr > 0.06) {
+          const th = Math.atan2(v.z, v.x);
+          const coil = (th / (Math.PI * 2) - Math.log(rr) / Math.log(2.2)) % 1;
+          const groove = (coil + 1) % 1 < 0.2;
+          const rib = Math.sin(th * 14 + Math.log(rr) * 6) > 0.4 && rr > 0.25;
+          if (groove) c.copy(accent[0]);
+          else if (rib) c.lerp(accent[0], 0.6);
+        }
+        break;
+      }
+      case 'plain':
+        break;
+    }
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+function makeStoneMaterial(k: StoneKind): THREE.Material {
+  if (k.shape === 'crystal') {
+    return new THREE.MeshPhongMaterial({
+      vertexColors: true,
+      flatShading: true,
+      transparent: true,
+      opacity: 0.78,
+      shininess: 120,
+      specular: 0xffffff,
+      emissive: 0x403850,
+    });
+  }
+  return new THREE.MeshLambertMaterial({
+    vertexColors: true,
+    flatShading: true,
+    emissive: k.glow ?? 0x000000,
+    emissiveIntensity: k.glow ? 0.55 : 0,
+  });
 }
